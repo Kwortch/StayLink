@@ -12,10 +12,11 @@ import {
 import { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import { useFonts } from "expo-font";
 import { useRouter } from "expo-router";
-import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useState } from "react";
 import {
+  Image,
   ImageBackground,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -42,24 +43,56 @@ const heroImageUrl =
 
 const promiseItems = [
   {
-    icon: "person.crop.circle.badge.checkmark",
     title: "Concierge",
     subtitle: "Personalized service",
+    description:
+      "Your personal assistant for a seamless stay. From booking local tours to securing last-minute dinner reservations, we handle the details so you don't have to.",
+    highlights: [
+      "Available 24/7 via in-app chat",
+      "Airport transfers & local tours",
+      "Special requests & room setups",
+    ],
+    image:
+      "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?auto=format&fit=crop&w=800&q=80",
   },
   {
-    icon: "fork.knife.circle",
     title: "Fine Dining",
     subtitle: "Exceptional cuisine",
+    description:
+      "Savor local Filipino flavors and international dishes crafted by award-winning chefs. Enjoy in-room dining or reserve a table at our signature restaurant.",
+    highlights: [
+      "In-room dining available 24/7",
+      "Signature tasting menus",
+      "Curated wine & cocktail list",
+    ],
+    image:
+      "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?auto=format&fit=crop&w=800&q=80",
   },
   {
-    icon: "sparkles",
     title: "Wellness Spa",
     subtitle: "Restore and relax",
+    description:
+      "Escape the noise and rejuvenate your senses. Our spa offers a sanctuary of tranquility featuring traditional Filipino healing rituals and modern therapies.",
+    highlights: [
+      "Traditional Hilot massage",
+      "Couples treatment rooms",
+      "Sauna & steam facilities",
+    ],
+    image:
+      "https://images.unsplash.com/photo-1544161515-4ab6ce6db874?auto=format&fit=crop&w=800&q=80",
   },
   {
-    icon: "car.fill",
     title: "Valet",
     subtitle: "Effortless arrival",
+    description:
+      "Skip the hassle of parking. Hand us your keys upon arrival and let our professional team securely park and retrieve your vehicle whenever you need it.",
+    highlights: [
+      "Secure, monitored parking",
+      "Complimentary for suite guests",
+      "Express vehicle retrieval via the app",
+    ],
+    image:
+      "https://images.unsplash.com/photo-1504215680853-026ed2a45def?auto=format&fit=crop&w=800&q=80",
   },
 ];
 
@@ -107,6 +140,9 @@ export default function DiscoverScreen() {
   const [guests, setGuests] = useState(2);
   const [destinationInput, setDestinationInput] = useState("");
   const [selectedDestination, setSelectedDestination] = useState("");
+  const [selectedPromise, setSelectedPromise] = useState<
+    (typeof promiseItems)[number] | null
+  >(null);
   const [hotels, setHotels] = useState<FirebaseHotel[]>([]);
 
   useEffect(() => subscribeToHotels(setHotels), []);
@@ -139,9 +175,17 @@ export default function DiscoverScreen() {
         bed: String(value.bed ?? hotel.bed ?? "Not specified"),
         description: String(value.description ?? hotel.description ?? ""),
         image: String(value.image ?? hotel.image ?? ""),
+        availableRooms: Number(value.availableRooms ?? hotel.availableRooms ?? 0),
+        destination: String(value.destination ?? hotel.destination ?? ""),
       }));
     });
   }, [hotels]);
+  const localRooms = selectedDestination
+    ? rooms.filter(
+        (room) =>
+          room.destination.toLowerCase() === selectedDestination.toLowerCase(),
+      )
+    : rooms;
   const filteredFirebaseRooms = firebaseRooms.filter((room) => {
     const hotel = hotels.find((item) =>
       item.rooms ? Object.keys(item.rooms).includes(room.id) : item.id === room.id,
@@ -149,9 +193,9 @@ export default function DiscoverScreen() {
     return !selectedDestination || hotel?.destination?.toLowerCase() === selectedDestination.toLowerCase();
   });
   const featuredRooms = selectedDestination
-    ? filteredFirebaseRooms
+    ? [...filteredFirebaseRooms, ...localRooms]
     : hotels.length
-      ? filteredFirebaseRooms
+      ? [...filteredFirebaseRooms, ...localFeaturedRooms]
       : localFeaturedRooms;
   const filteredDestinations = destinations.filter((destination) =>
     destination.toLowerCase().includes(destinationInput.toLowerCase()),
@@ -406,20 +450,70 @@ export default function DiscoverScreen() {
 
         <View style={styles.promiseGrid}>
           {promiseItems.map((item) => (
-            <View key={item.title} style={styles.promiseItem}>
-              <View style={styles.promiseIconWrap}>
-                <SymbolView
-                  name={item.icon as never}
-                  tintColor={StayLinkColors.lightGold}
-                  size={18}
-                />
-              </View>
+            <Pressable
+              key={item.title}
+              onPress={() => setSelectedPromise(item)}
+              style={({ pressed }) => [
+                styles.promiseItem,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Image source={{ uri: item.image }} style={styles.promiseImage} />
               <Text style={styles.promiseTitle}>{item.title}</Text>
               <Text style={styles.promiseSubtitle}>{item.subtitle}</Text>
-            </View>
+            </Pressable>
           ))}
         </View>
       </ScrollView>
+
+      <Modal
+        visible={selectedPromise !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedPromise(null)}
+      >
+        <View style={styles.promiseModalBackdrop}>
+          <View style={styles.promiseModalCard}>
+            {selectedPromise ? (
+              <ScrollView
+                contentContainerStyle={styles.promiseModalContent}
+                showsVerticalScrollIndicator={false}
+              >
+                <Image
+                  source={{ uri: selectedPromise.image }}
+                  style={styles.promiseModalImage}
+                />
+                <Text style={styles.promiseModalTitle}>
+                  {selectedPromise.title}
+                </Text>
+                <Text style={styles.promiseModalSubtitle}>
+                  {selectedPromise.subtitle}
+                </Text>
+                <Text style={styles.promiseModalDescription}>
+                  {selectedPromise.description}
+                </Text>
+                <View style={styles.promiseHighlights}>
+                  {selectedPromise.highlights.map((highlight) => (
+                    <View key={highlight} style={styles.promiseHighlightRow}>
+                      <Text style={styles.promiseBullet}>•</Text>
+                      <Text style={styles.promiseHighlight}>{highlight}</Text>
+                    </View>
+                  ))}
+                </View>
+                <Pressable
+                  onPress={() => setSelectedPromise(null)}
+                  style={({ pressed }) => [
+                    styles.promiseCloseButton,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.promiseCloseText}>Close</Text>
+                </Pressable>
+              </ScrollView>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
     </Screen>
   );
 }
@@ -753,30 +847,106 @@ const styles = StyleSheet.create({
     borderRadius: StayLinkRadius.lg,
     borderWidth: 1,
     borderColor: StayLinkColors.border,
-    padding: StayLinkSpacing.md,
+    overflow: "hidden",
     gap: 6,
   },
-  promiseIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  promiseImage: {
+    width: "100%",
+    height: 92,
     backgroundColor: StayLinkColors.secondaryCard,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: StayLinkColors.border,
-    marginBottom: 2,
   },
   promiseTitle: {
     color: StayLinkColors.primaryText,
     fontFamily: "Outfit_700Bold",
     fontSize: 15,
+    marginHorizontal: StayLinkSpacing.md,
   },
   promiseSubtitle: {
     color: StayLinkColors.mutedText,
     fontFamily: "Outfit_400Regular",
     fontSize: 13,
     lineHeight: 18,
+    marginHorizontal: StayLinkSpacing.md,
+    marginBottom: StayLinkSpacing.md,
+  },
+  promiseModalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    justifyContent: "center",
+    padding: StayLinkSpacing.lg,
+  },
+  promiseModalCard: {
+    maxHeight: "86%",
+    backgroundColor: StayLinkColors.card,
+    borderRadius: StayLinkRadius.lg,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    overflow: "hidden",
+  },
+  promiseModalContent: {
+    paddingBottom: StayLinkSpacing.lg,
+  },
+  promiseModalImage: {
+    width: "100%",
+    height: 170,
+    backgroundColor: StayLinkColors.secondaryCard,
+  },
+  promiseModalTitle: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "PlayfairDisplay_600SemiBold",
+    fontSize: 26,
+    marginTop: StayLinkSpacing.lg,
+    marginHorizontal: StayLinkSpacing.lg,
+  },
+  promiseModalSubtitle: {
+    color: StayLinkColors.lightGold,
+    fontFamily: "Outfit_600SemiBold",
+    fontSize: 15,
+    marginTop: 4,
+    marginHorizontal: StayLinkSpacing.lg,
+  },
+  promiseModalDescription: {
+    color: StayLinkColors.mutedText,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: StayLinkSpacing.md,
+    marginHorizontal: StayLinkSpacing.lg,
+  },
+  promiseHighlights: {
+    gap: 8,
+    marginTop: StayLinkSpacing.lg,
+    marginHorizontal: StayLinkSpacing.lg,
+  },
+  promiseHighlightRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  promiseBullet: {
+    color: StayLinkColors.lightGold,
+    fontFamily: "Outfit_700Bold",
+    fontSize: 17,
+    lineHeight: 20,
+  },
+  promiseHighlight: {
+    flex: 1,
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  promiseCloseButton: {
+    alignItems: "center",
+    backgroundColor: StayLinkColors.lightGold,
+    borderRadius: StayLinkRadius.md,
+    marginTop: StayLinkSpacing.lg,
+    marginHorizontal: StayLinkSpacing.lg,
+    paddingVertical: StayLinkSpacing.sm,
+  },
+  promiseCloseText: {
+    color: StayLinkColors.background,
+    fontFamily: "Outfit_700Bold",
+    fontSize: 14,
   },
   pressed: {
     opacity: 0.88,

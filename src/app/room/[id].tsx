@@ -21,6 +21,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -57,6 +58,13 @@ export default function RoomDetailScreen() {
     date.setDate(date.getDate() + 1);
     return date;
   });
+  const [checkInTime, setCheckInTime] = useState(() => {
+    const date = new Date();
+    date.setHours(15, 0, 0, 0);
+    return date;
+  });
+  const [contactNumber, setContactNumber] = useState("");
+  const [leadGuest, setLeadGuest] = useState("");
   const [guests, setGuests] = useState(2);
   const [breakfast, setBreakfast] = useState(false);
   const [spa, setSpa] = useState(false);
@@ -76,7 +84,11 @@ export default function RoomDetailScreen() {
   useEffect(
     () =>
       subscribeToUserProfile(
-        (value) => value && setProfile((current) => ({ ...current, ...value })),
+        (value) => {
+          if (!value) return;
+          setProfile((current) => ({ ...current, ...value }));
+          if (value.phone) setContactNumber((current) => current || value.phone!);
+        },
       ),
     [],
   );
@@ -110,10 +122,19 @@ export default function RoomDetailScreen() {
     Math.round((roomPrice + extrasPrice) * membership.discount) / 100;
   const totalPrice = roomPrice + extrasPrice - discount;
   const formatDate = (date: Date) => date.toISOString().slice(0, 10);
+  const formatTime = (date: Date) =>
+    date.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    });
   const openDatePicker = (field: "checkIn" | "checkOut") => {
     const value = field === "checkIn" ? checkIn : checkOut;
     DateTimePickerAndroid.open({
       value,
+      minimumDate:
+        field === "checkIn"
+          ? new Date()
+          : new Date(checkIn.getTime() + 86400000),
       mode: "date",
       display: "calendar",
       onChange: (_event, selectedDate) => {
@@ -128,6 +149,16 @@ export default function RoomDetailScreen() {
         } else if (selectedDate > checkIn) {
           setCheckOut(selectedDate);
         }
+      },
+    });
+  };
+  const openTimePicker = () => {
+    DateTimePickerAndroid.open({
+      value: checkInTime,
+      mode: "time",
+      display: "clock",
+      onChange: (_event, selectedTime) => {
+        if (selectedTime) setCheckInTime(selectedTime);
       },
     });
   };
@@ -174,6 +205,15 @@ export default function RoomDetailScreen() {
               <Text style={styles.infoValue}>{room.id}</Text>
             </View>
 
+            <View style={styles.infoBlock}>
+              <Text style={styles.infoLabel}>Availability</Text>
+              <Text style={styles.infoValue}>
+                {room.availableRooms > 0
+                  ? `${room.availableRooms} rooms available`
+                  : "Currently unavailable"}
+              </Text>
+            </View>
+
             <Pressable
               accessibilityRole="button"
               disabled={isBooking}
@@ -213,9 +253,33 @@ export default function RoomDetailScreen() {
               <Text style={styles.optionLabel}>Check-out</Text>
               <Text style={styles.optionValue}>{checkOut.toDateString()}</Text>
             </Pressable>
-            <View style={styles.optionRow}>
-              <Text style={styles.optionLabel}>Nights</Text>
-              <Text style={styles.optionValue}>{nights}</Text>
+            <Pressable style={styles.optionRow} onPress={openTimePicker}>
+              <Text style={styles.optionLabel}>Check-in time</Text>
+              <Text style={styles.optionValue}>{formatTime(checkInTime)}</Text>
+            </Pressable>
+            <View style={styles.contactField}>
+              <Text style={styles.optionLabel}>Contact number</Text>
+              <TextInput
+                accessibilityLabel="Contact number for calls"
+                value={contactNumber}
+                onChangeText={setContactNumber}
+                placeholder="09XXXXXXXXX"
+                placeholderTextColor={StayLinkColors.mutedText}
+                keyboardType="phone-pad"
+                style={styles.contactInput}
+              />
+            </View>
+            <View style={styles.contactField}>
+              <Text style={styles.optionLabel}>Lead guest</Text>
+              <TextInput
+                accessibilityLabel="Lead guest name"
+                value={leadGuest}
+                onChangeText={setLeadGuest}
+                placeholder="Name of guest to accommodate"
+                placeholderTextColor={StayLinkColors.mutedText}
+                autoCapitalize="words"
+                style={styles.contactInput}
+              />
             </View>
             <View style={styles.optionRow}>
               <Text style={styles.optionLabel}>Guests</Text>
@@ -287,8 +351,12 @@ export default function RoomDetailScreen() {
                       roomImage: room.image,
                       location: room.view,
                       checkIn: formatDate(checkIn),
+                      checkInTime: formatTime(checkInTime),
+                      contactNumber: contactNumber.trim(),
+                      leadGuest: leadGuest.trim(),
                       checkOut: formatDate(checkOut),
                       nights,
+                      availableRooms: room.availableRooms,
                       guests,
                       extras,
                       roomPrice,
@@ -491,6 +559,22 @@ const styles = StyleSheet.create({
     color: StayLinkColors.primaryText,
     fontFamily: "Outfit_600SemiBold",
     fontSize: 14,
+  },
+  contactField: {
+    backgroundColor: StayLinkColors.secondaryCard,
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    paddingHorizontal: StayLinkSpacing.md,
+    paddingVertical: StayLinkSpacing.sm,
+    gap: 4,
+  },
+  contactInput: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_600SemiBold",
+    fontSize: 14,
+    minHeight: 28,
+    padding: 0,
   },
   stepper: {
     flexDirection: "row",

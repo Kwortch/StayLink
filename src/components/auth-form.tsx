@@ -23,12 +23,40 @@ type AuthFormProps = {
     fullName: string;
     email: string;
     password: string;
+    address: string;
+    phone: string;
   }) => Promise<void>;
 };
+
+const philippineLocations = [
+  "Manila, Metro Manila",
+  "Quezon City, Metro Manila",
+  "Makati, Metro Manila",
+  "Pasig, Metro Manila",
+  "Taguig, Metro Manila",
+  "Cebu City, Cebu",
+  "Davao City, Davao del Sur",
+  "Baguio, Benguet",
+  "Batangas City, Batangas",
+  "Tagaytay, Cavite",
+  "Antipolo, Rizal",
+  "Iloilo City, Iloilo",
+  "Cagayan de Oro, Misamis Oriental",
+  "Bacolod, Negros Occidental",
+  "Puerto Princesa, Palawan",
+  "Naga, Camarines Sur",
+  "Dumaguete, Negros Oriental",
+  "General Santos, South Cotabato",
+  "Boracay, Aklan",
+  "Panglao, Bohol",
+] as const;
 
 export function AuthForm({ mode, onSubmit }: AuthFormProps) {
   const router = useRouter();
   const [fullName, setFullName] = useState("");
+  const [address, setAddress] = useState("");
+  const [showAddressSuggestions, setShowAddressSuggestions] = useState(false);
+  const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -36,6 +64,13 @@ export function AuthForm({ mode, onSubmit }: AuthFormProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const isRegistering = mode === "register";
+  const addressSuggestions = showAddressSuggestions && address.trim()
+    ? philippineLocations
+        .filter((location) =>
+          location.toLowerCase().includes(address.trim().toLowerCase()),
+        )
+        .slice(0, 5)
+    : [];
 
   const handleSubmit = async () => {
     setErrorMessage("");
@@ -60,6 +95,8 @@ export function AuthForm({ mode, onSubmit }: AuthFormProps) {
         fullName: fullName.trim(),
         email: trimmedEmail,
         password,
+        address: address.trim(),
+        phone: phone.trim(),
       });
     } catch (error) {
       const code =
@@ -119,6 +156,52 @@ export function AuthForm({ mode, onSubmit }: AuthFormProps) {
               onChangeText={setFullName}
               placeholder="Alex Morgan"
             />
+          ) : null}
+          {isRegistering ? (
+            <>
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>Address</Text>
+                <TextInput
+                  value={address}
+                  onChangeText={(value) => {
+                    setAddress(value);
+                    setShowAddressSuggestions(true);
+                  }}
+                  onFocus={() => setShowAddressSuggestions(true)}
+                  onBlur={() => setShowAddressSuggestions(false)}
+                  placeholder="City or province"
+                  placeholderTextColor={StayLinkColors.mutedText}
+                  autoCapitalize="words"
+                  style={styles.input}
+                />
+                {addressSuggestions && addressSuggestions.length > 0 ? (
+                  <View style={styles.suggestions}>
+                    {addressSuggestions.map((location) => (
+                      <Pressable
+                        key={location}
+                        onPress={() => {
+                          setAddress(location);
+                          setShowAddressSuggestions(false);
+                        }}
+                        style={({ pressed }) => [
+                          styles.suggestion,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text style={styles.suggestionText}>{location}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+              <Field
+                label="Contact Number"
+                value={phone}
+                onChangeText={setPhone}
+                placeholder="09XXXXXXXXX"
+                keyboardType="phone-pad"
+              />
+            </>
           ) : null}
           <Field
             label="Email"
@@ -267,6 +350,22 @@ const styles = StyleSheet.create({
     fontSize: 15,
     minHeight: 50,
     paddingHorizontal: StayLinkSpacing.md,
+  },
+  suggestions: {
+    backgroundColor: StayLinkColors.secondaryCard,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    borderRadius: StayLinkRadius.md,
+    overflow: "hidden",
+  },
+  suggestion: {
+    paddingHorizontal: StayLinkSpacing.md,
+    paddingVertical: StayLinkSpacing.sm,
+  },
+  suggestionText: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_500Medium",
+    fontSize: 13,
   },
   error: {
     color: "#F4A6A6",

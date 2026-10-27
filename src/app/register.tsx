@@ -38,7 +38,13 @@ export default function RegisterScreen() {
     <Screen contentStyle={styles.content}>
       <AuthForm
         mode="register"
-        onSubmit={async ({ fullName, email, password }) => {
+        onSubmit={async ({
+          fullName,
+          email,
+          password,
+          address,
+          phone,
+        }) => {
           const credential = await createUserWithEmailAndPassword(
             auth,
             email,
@@ -48,6 +54,8 @@ export default function RegisterScreen() {
           await set(ref(database, `users/${credential.user.uid}`), {
             fullName,
             email: credential.user.email,
+            address,
+            phone,
             createdAt: new Date().toISOString(),
             loyaltyPoints: 0,
             membership: "Non-Member",

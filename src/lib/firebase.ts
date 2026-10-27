@@ -29,6 +29,9 @@ export type FirebaseReservation = {
   roomImage?: string;
   reservationId?: string;
   checkIn?: string;
+  checkInTime?: string;
+  contactNumber?: string;
+  leadGuest?: string;
   checkOut?: string;
   total?: number;
   hotelId?: string;
@@ -44,6 +47,7 @@ export type FirebaseReservation = {
   nights?: number;
   createdAt?: string;
   updatedAt?: string;
+  availableRooms?: number;
 };
 
 export type FirebaseHotel = {
@@ -62,6 +66,7 @@ export type FirebaseHotel = {
   bed?: string;
   description?: string;
   image?: string;
+  availableRooms?: number;
 };
 
 export type UserPreferences = {
@@ -69,6 +74,9 @@ export type UserPreferences = {
   bedPreference: string;
   smoking: string;
   notifications: string;
+  emailNotifications: boolean;
+  smsNotifications: boolean;
+  pushNotifications: boolean;
   language: string;
   currency: string;
 };
@@ -76,6 +84,7 @@ export type UserPreferences = {
 export type FirebaseUserProfile = {
   fullName: string;
   email: string;
+  address?: string;
   phone?: string;
   createdAt: string;
   loyaltyPoints: number;
@@ -85,12 +94,15 @@ export type FirebaseUserProfile = {
 };
 
 export const defaultPreferences: UserPreferences = {
-  preferredRoom: "None",
-  bedPreference: "None",
-  smoking: "None",
+  preferredRoom: "No preference",
+  bedPreference: "No preference",
+  smoking: "No preference",
   notifications: "None",
-  language: "None",
-  currency: "None",
+  emailNotifications: false,
+  smsNotifications: false,
+  pushNotifications: false,
+  language: "English",
+  currency: "PHP",
 };
 
 export const membershipLevels = [
@@ -153,15 +165,43 @@ export async function createReservation(
   const user = firebaseAuth.currentUser;
   if (!user) throw new Error("You must be signed in to create a reservation.");
 
+  const inventoryRef = ref(database, `roomInventory/${reservation.roomId}`);
+  const inventoryClaim = await runTransaction(inventoryRef, (current) => {
+    const availableRooms =
+      typeof current?.availableRooms === "number"
+        ? current.availableRooms
+        : Number(reservation.availableRooms ?? 0);
+
+    if (availableRooms <= 0) return;
+
+    return {
+      availableRooms: availableRooms - 1,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+
+  if (!inventoryClaim.committed) {
+    throw new Error("This room is no longer available.");
+  }
+
   const reservationRef = push(ref(database, "bookings"));
   const reservationId = reservation.reservationId ?? reservationRef.key;
-  await set(reservationRef, {
-    ...reservation,
-    userId: user.uid,
-    reservationId,
-    createdAt: new Date().toISOString(),
-  });
-  return reservationId;
+  try {
+    await set(reservationRef, {
+      ...reservation,
+      userId: user.uid,
+      reservationId,
+      createdAt: new Date().toISOString(),
+    });
+    return reservationId;
+  } catch (error) {
+    await runTransaction(inventoryRef, (current) => ({
+      ...(current ?? {}),
+      availableRooms: Number(current?.availableRooms ?? 0) + 1,
+      updatedAt: new Date().toISOString(),
+    }));
+    throw error;
+  }
 }
 
 export async function awardCompletedBookingPoints(
@@ -209,6 +249,39 @@ export async function updateReservation(
   }
 
   await update(bookingRef, { ...changes, updatedAt: new Date().toISOString() });
+}
+
+export async function cancelReservation(
+  reservation: FirebaseReservation,
+  reason: string,
+) {
+  const user = firebaseAuth.currentUser;
+  if (!user) throw new Error("You must be signed in to cancel a reservation.");
+
+  const bookingRef = ref(database, `bookings/${reservation.id}`);
+  const snapshot = await get(bookingRef);
+  const current = snapshot.val();
+  if (!snapshot.exists() || current?.userId !== user.uid) {
+    throw new Error("Reservation not found.");
+  }
+  if (current.status === "Cancelled") return;
+  if (current.status === "Completed") {
+    throw new Error("Completed reservations cannot be cancelled.");
+  }
+
+  await update(bookingRef, {
+    status: "Cancelled",
+    cancellationReason: reason,
+    cancelledAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const inventoryRef = ref(database, `roomInventory/${reservation.roomId}`);
+  await runTransaction(inventoryRef, (inventory) => ({
+    ...(inventory ?? {}),
+    availableRooms: Number(inventory?.availableRooms ?? 0) + 1,
+    updatedAt: new Date().toISOString(),
+  }));
 }
 
 export function subscribeToReservationsForCurrentUser(

@@ -54,9 +54,14 @@ export function RoomCard({ room, variant = "rooms", onPress }: RoomCardProps) {
 
         <Text style={styles.title}>{room.name}</Text>
         <Text style={styles.meta}>
-          {room.size}m² · {room.view}
+          {room.destination} · {room.size}m² · {room.view}
         </Text>
         <Text style={styles.bed}>{room.bed}</Text>
+        <Text style={styles.availability}>
+          {room.availableRooms > 0
+            ? `${room.availableRooms} rooms available`
+            : "Currently unavailable"}
+        </Text>
 
         {!compact && <Text style={styles.description}>{room.description}</Text>}
 
@@ -157,6 +162,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     fontWeight: "500",
+  },
+  availability: {
+    color: StayLinkColors.lightGold,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "600",
   },
   description: {
     color: StayLinkColors.mutedText,

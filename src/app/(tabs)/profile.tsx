@@ -42,6 +42,81 @@ import {
 import { signOut } from "firebase/auth";
 import { useEffect, useState } from "react";
 
+type PreferenceKey =
+  | "preferredRoom"
+  | "bedPreference"
+  | "smoking"
+  | "language";
+
+const preferenceOptions: Record<PreferenceKey, string[]> = {
+  preferredRoom: [
+    "Standard",
+    "Superior",
+    "Deluxe",
+    "Suite",
+    "Presidential",
+    "No preference",
+  ],
+  bedPreference: ["King", "Queen", "Twin", "Double", "No preference"],
+  smoking: ["Non-smoking", "Smoking", "No preference"],
+  language: ["English", "Filipino"],
+};
+
+function PreferenceSelect({
+  label,
+  value,
+  options,
+  open,
+  onToggle,
+  onSelect,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  open: boolean;
+  onToggle: () => void;
+  onSelect: (value: string) => void;
+}) {
+  return (
+    <View style={styles.preferenceEditor}>
+      <Text style={styles.editorLabel}>{label}</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        onPress={onToggle}
+        style={styles.selectButton}
+      >
+        <Text style={styles.selectValue}>{value}</Text>
+        <Text style={styles.selectArrow}>{open ? "▴" : "▾"}</Text>
+      </Pressable>
+      {open ? (
+        <View style={styles.selectMenu}>
+          {options.map((option) => (
+            <Pressable
+              key={option}
+              onPress={() => onSelect(option)}
+              style={({ pressed }) => [
+                styles.selectOption,
+                value === option && styles.selectOptionActive,
+                pressed && styles.buttonPressed,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.selectOptionText,
+                  value === option && styles.selectOptionTextActive,
+                ]}
+              >
+                {option}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 export default function ProfileScreen() {
   const [profile, setProfile] = useState<FirebaseUserProfile>(() =>
     getDefaultProfile(auth.currentUser!),
@@ -51,6 +126,9 @@ export default function ProfileScreen() {
   const [draftName, setDraftName] = useState("");
   const [draftPhone, setDraftPhone] = useState("");
   const [draftPreferences, setDraftPreferences] = useState(defaultPreferences);
+  const [openPreference, setOpenPreference] = useState<PreferenceKey | null>(
+    null,
+  );
   const [fontsLoaded] = useFonts({
     PlayfairDisplay_400Regular,
     PlayfairDisplay_600SemiBold,
@@ -104,8 +182,17 @@ export default function ProfileScreen() {
   };
   const updatePreference = (
     key: keyof typeof defaultPreferences,
-    value: string,
+    value: string | boolean,
   ) => setDraftPreferences((current) => ({ ...current, [key]: value }));
+
+  const toggleNotification = (
+    key: "emailNotifications" | "smsNotifications" | "pushNotifications",
+  ) =>
+    setDraftPreferences((current) => ({
+      ...current,
+      [key]: !current[key],
+      notifications: "Configured",
+    }));
 
   const membership =
     membershipLevels.find(
@@ -237,7 +324,13 @@ export default function ProfileScreen() {
             <View style={styles.preferenceRow}>
               <Text style={styles.preferenceLabel}>Notifications</Text>
               <Text style={styles.preferenceValue}>
-                {profile.preferences.notifications}
+                {[
+                  profile.preferences.emailNotifications && "Email",
+                  profile.preferences.smsNotifications && "SMS",
+                  profile.preferences.pushNotifications && "Push",
+                ]
+                  .filter(Boolean)
+                  .join(", ") || "None"}
               </Text>
             </View>
             <View style={styles.preferenceRow}>
@@ -249,7 +342,7 @@ export default function ProfileScreen() {
             <View style={styles.preferenceRow}>
               <Text style={styles.preferenceLabel}>Currency</Text>
               <Text style={styles.preferenceValue}>
-                {profile.preferences.currency}
+                PHP
               </Text>
             </View>
           </View>
@@ -284,7 +377,12 @@ export default function ProfileScreen() {
         onRequestClose={() => setIsEditing(false)}
       >
         <View style={styles.modalBackdrop}>
-          <View style={styles.editModal}>
+          <ScrollView
+            style={styles.editModal}
+            contentContainerStyle={styles.editModalContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
             <Text style={styles.modalTitle}>Edit Profile</Text>
             <TextInput
               value={draftName}
@@ -301,20 +399,106 @@ export default function ProfileScreen() {
               style={styles.editInput}
               keyboardType="phone-pad"
             />
-            {(
-              Object.keys(defaultPreferences) as Array<
-                keyof typeof defaultPreferences
-              >
-            ).map((key) => (
-              <TextInput
-                key={key}
-                value={draftPreferences[key]}
-                onChangeText={(value) => updatePreference(key, value)}
-                placeholder={key}
-                placeholderTextColor={StayLinkColors.mutedText}
-                style={styles.editInput}
-              />
-            ))}
+            <PreferenceSelect
+              label="Preferred Room Type"
+              value={draftPreferences.preferredRoom}
+              options={preferenceOptions.preferredRoom}
+              open={openPreference === "preferredRoom"}
+              onToggle={() =>
+                setOpenPreference(
+                  openPreference === "preferredRoom" ? null : "preferredRoom",
+                )
+              }
+              onSelect={(value) => {
+                updatePreference("preferredRoom", value);
+                setOpenPreference(null);
+              }}
+            />
+            <PreferenceSelect
+              label="Bed Preference"
+              value={draftPreferences.bedPreference}
+              options={preferenceOptions.bedPreference}
+              open={openPreference === "bedPreference"}
+              onToggle={() =>
+                setOpenPreference(
+                  openPreference === "bedPreference" ? null : "bedPreference",
+                )
+              }
+              onSelect={(value) => {
+                updatePreference("bedPreference", value);
+                setOpenPreference(null);
+              }}
+            />
+            <PreferenceSelect
+              label="Smoking"
+              value={draftPreferences.smoking}
+              options={preferenceOptions.smoking}
+              open={openPreference === "smoking"}
+              onToggle={() =>
+                setOpenPreference(
+                  openPreference === "smoking" ? null : "smoking",
+                )
+              }
+              onSelect={(value) => {
+                updatePreference("smoking", value);
+                setOpenPreference(null);
+              }}
+            />
+            <View style={styles.preferenceEditor}>
+              <Text style={styles.editorLabel}>Notifications</Text>
+              {(
+                [
+                  ["emailNotifications", "Email"],
+                  ["smsNotifications", "SMS"],
+                  ["pushNotifications", "Push"],
+                ] as const
+              ).map(([key, label]) => (
+                <Pressable
+                  key={key}
+                  accessibilityRole="switch"
+                  accessibilityState={{ checked: draftPreferences[key] }}
+                  onPress={() => toggleNotification(key)}
+                  style={styles.toggleRow}
+                >
+                  <Text style={styles.toggleLabel}>{label}</Text>
+                  <View
+                    style={[
+                      styles.toggle,
+                      draftPreferences[key] && styles.toggleActive,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.toggleKnob,
+                        draftPreferences[key] && styles.toggleKnobActive,
+                      ]}
+                    />
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+            <PreferenceSelect
+              label="Language"
+              value={draftPreferences.language}
+              options={preferenceOptions.language}
+              open={openPreference === "language"}
+              onToggle={() =>
+                setOpenPreference(
+                  openPreference === "language" ? null : "language",
+                )
+              }
+              onSelect={(value) => {
+                updatePreference("language", value);
+                setOpenPreference(null);
+              }}
+            />
+            <View style={styles.preferenceEditor}>
+              <Text style={styles.editorLabel}>Currency</Text>
+              <View style={styles.fixedValue}>
+                <Text style={styles.selectValue}>PHP</Text>
+                <Text style={styles.fixedHint}>Philippines only</Text>
+              </View>
+            </View>
             <View style={styles.modalActions}>
               <Pressable
                 onPress={() => setIsEditing(false)}
@@ -336,7 +520,7 @@ export default function ProfileScreen() {
                 <Text style={styles.saveText}>Save</Text>
               </Pressable>
             </View>
-          </View>
+          </ScrollView>
         </View>
       </Modal>
     </Screen>
@@ -586,9 +770,12 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0, 0, 0, 0.65)",
   },
   editModal: {
+    maxHeight: "90%",
     backgroundColor: StayLinkColors.card,
     borderTopLeftRadius: StayLinkRadius.xl,
     borderTopRightRadius: StayLinkRadius.xl,
+  },
+  editModalContent: {
     padding: StayLinkSpacing.lg,
     gap: StayLinkSpacing.sm,
   },
@@ -607,6 +794,109 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit_400Regular",
     minHeight: 44,
     paddingHorizontal: StayLinkSpacing.md,
+  },
+  preferenceEditor: {
+    gap: StayLinkSpacing.xs,
+  },
+  editorLabel: {
+    color: StayLinkColors.mutedText,
+    fontFamily: "Outfit_500Medium",
+    fontSize: 12,
+  },
+  selectButton: {
+    minHeight: 44,
+    paddingHorizontal: StayLinkSpacing.md,
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    backgroundColor: StayLinkColors.secondaryCard,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  selectValue: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_600SemiBold",
+    fontSize: 14,
+  },
+  selectArrow: {
+    color: StayLinkColors.lightGold,
+    fontSize: 16,
+  },
+  selectMenu: {
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    backgroundColor: StayLinkColors.secondaryCard,
+    overflow: "hidden",
+  },
+  selectOption: {
+    paddingHorizontal: StayLinkSpacing.md,
+    paddingVertical: StayLinkSpacing.sm,
+  },
+  selectOptionActive: {
+    backgroundColor: "rgba(200, 146, 42, 0.12)",
+  },
+  selectOptionText: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_500Medium",
+    fontSize: 14,
+  },
+  selectOptionTextActive: {
+    color: StayLinkColors.lightGold,
+  },
+  toggleRow: {
+    minHeight: 42,
+    paddingHorizontal: StayLinkSpacing.md,
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    backgroundColor: StayLinkColors.secondaryCard,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  toggleLabel: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_500Medium",
+    fontSize: 14,
+  },
+  toggle: {
+    width: 44,
+    height: 24,
+    padding: 3,
+    borderRadius: 999,
+    backgroundColor: StayLinkColors.border,
+    justifyContent: "center",
+  },
+  toggleActive: {
+    backgroundColor: StayLinkColors.gold,
+  },
+  toggleKnob: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: StayLinkColors.mutedText,
+  },
+  toggleKnobActive: {
+    alignSelf: "flex-end",
+    backgroundColor: StayLinkColors.background,
+  },
+  fixedValue: {
+    minHeight: 44,
+    paddingHorizontal: StayLinkSpacing.md,
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    backgroundColor: StayLinkColors.secondaryCard,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  fixedHint: {
+    color: StayLinkColors.mutedText,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 12,
   },
   modalActions: {
     flexDirection: "row",

@@ -1,11 +1,16 @@
 import { Tabs } from "expo-router";
-import { SymbolView } from "expo-symbols";
+import { Ionicons } from "@expo/vector-icons";
+import type { ComponentProps } from "react";
 import type { ColorValue } from "react-native";
 
 import { StayLinkColors, StayLinkSpacing } from "@/constants/theme";
 
-function tabIcon(name: string, color: ColorValue) {
-  return <SymbolView name={name as never} tintColor={color} size={20} />;
+function tabIcon(
+  name: ComponentProps<typeof Ionicons>["name"],
+  color: ColorValue,
+) {
+  const iconColor = typeof color === "number" ? undefined : color;
+  return <Ionicons name={name} color={iconColor ?? undefined} size={21} />;
 }
 
 export default function TabsLayout() {
@@ -19,17 +24,18 @@ export default function TabsLayout() {
           backgroundColor: StayLinkColors.card,
           borderTopColor: StayLinkColors.border,
           borderTopWidth: 1,
-          height: 72,
+          height: 64,
           paddingTop: StayLinkSpacing.xxs,
-          paddingBottom: StayLinkSpacing.xs,
+          paddingBottom: 0,
         },
         tabBarItemStyle: {
-          paddingTop: StayLinkSpacing.xxs,
+          paddingTop: 0,
+          paddingBottom: StayLinkSpacing.sm,
         },
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: "600",
-          marginBottom: StayLinkSpacing.xxs,
+          marginBottom: 0,
         },
         tabBarHideOnKeyboard: true,
         sceneStyle: {
@@ -41,28 +47,28 @@ export default function TabsLayout() {
         name="discover"
         options={{
           title: "Discover",
-          tabBarIcon: ({ color }) => tabIcon("safari.fill", color),
+          tabBarIcon: ({ color }) => tabIcon("compass-outline", color),
         }}
       />
       <Tabs.Screen
         name="rooms"
         options={{
           title: "Rooms",
-          tabBarIcon: ({ color }) => tabIcon("bed.double.fill", color),
+          tabBarIcon: ({ color }) => tabIcon("bed-outline", color),
         }}
       />
       <Tabs.Screen
         name="my-stays"
         options={{
           title: "My Stays",
-          tabBarIcon: ({ color }) => tabIcon("calendar.badge.clock", color),
+          tabBarIcon: ({ color }) => tabIcon("calendar-outline", color),
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
           title: "Profile",
-          tabBarIcon: ({ color }) => tabIcon("person.crop.circle", color),
+          tabBarIcon: ({ color }) => tabIcon("person-outline", color),
         }}
       />
     </Tabs>

@@ -9,7 +9,6 @@ import {
   PlayfairDisplay_600SemiBold,
   PlayfairDisplay_700Bold,
 } from "@expo-google-fonts/playfair-display";
-import { DateTimePickerAndroid } from "@react-native-community/datetimepicker";
 import { useFonts } from "expo-font";
 import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
@@ -21,6 +20,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -32,18 +32,20 @@ import {
 } from "@/constants/theme";
 import {
   awardCompletedBookingPoints,
+  cancelReservation,
   firebaseAuth,
   subscribeToReservationsForCurrentUser,
-  updateReservation,
   type FirebaseReservation,
 } from "@/lib/firebase";
 
 type ReservationCardState = {
+  id: string;
   reservationId: string;
   roomId: string;
   roomName: string;
   roomImage: string;
   checkIn: string;
+  checkInTime: string;
   checkOut: string;
   nights: number;
   total: number;
@@ -93,11 +95,13 @@ function formatReservationCard(
   }
 
   return {
+    id: reservation.id,
     reservationId: reservation.reservationId ?? reservation.id,
     roomId,
     roomName,
     roomImage,
     checkIn: normalizeReservationDate(checkInRaw),
+    checkInTime: reservation.checkInTime ?? "Time not set",
     checkOut: normalizeReservationDate(checkOutRaw),
     nights,
     total,
@@ -111,12 +115,14 @@ export default function MyStaysScreen() {
   const router = useRouter();
   const [reservations, setReservations] = useState<FirebaseReservation[]>([]);
   const [loading, setLoading] = useState(false);
-  const [editing, setEditing] = useState<FirebaseReservation | null>(null);
-  const [editCheckIn, setEditCheckIn] = useState(new Date());
-  const [editCheckOut, setEditCheckOut] = useState(new Date());
-  const [editGuests, setEditGuests] = useState(1);
-  const [editExtras, setEditExtras] = useState<string[]>([]);
-  const [savingEdit, setSavingEdit] = useState(false);
+  const [checkInDetails, setCheckInDetails] =
+    useState<FirebaseReservation | null>(null);
+  const [cancellationTarget, setCancellationTarget] =
+    useState<FirebaseReservation | null>(null);
+  const [cancellationReason, setCancellationReason] = useState("");
+  const [otherCancellationReason, setOtherCancellationReason] = useState("");
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelledSuccessfully, setCancelledSuccessfully] = useState(false);
 
   const [fontsLoaded] = useFonts({
     PlayfairDisplay_400Regular,
@@ -155,7 +161,11 @@ export default function MyStaysScreen() {
 
   const upcomingReservationFromFirebase = useMemo(() => {
     const normalized = reservations
-      .filter((reservation) => reservation.status !== "Completed")
+      .filter(
+        (reservation) =>
+          reservation.status !== "Completed" &&
+          reservation.status !== "Cancelled",
+      )
       .map(formatReservationCard)
       .filter((item): item is ReservationCardState => Boolean(item));
 
@@ -168,66 +178,65 @@ export default function MyStaysScreen() {
 
   const additionalUpcomingReservations = useMemo(() => {
     return reservations
-      .filter((reservation) => reservation.status !== "Completed")
+      .filter(
+        (reservation) =>
+          reservation.status !== "Completed" &&
+          reservation.status !== "Cancelled",
+      )
       .map(formatReservationCard)
       .filter((item): item is ReservationCardState => Boolean(item))
       .slice(1);
   }, [reservations]);
 
-  const handleModify = () => {
+  const openCheckInDetails = (reservationId: string) => {
     const reservation = reservations.find(
       (item) =>
-        item.id === upcomingReservationFromFirebase?.reservationId ||
-        item.reservationId === upcomingReservationFromFirebase?.reservationId,
+        item.id === reservationId || item.reservationId === reservationId,
     );
-    if (!reservation) return;
-    setEditing(reservation);
-    setEditCheckIn(new Date(`${reservation.checkIn}T00:00:00`));
-    setEditCheckOut(new Date(`${reservation.checkOut}T00:00:00`));
-    setEditGuests(reservation.guests ?? 1);
-    setEditExtras(reservation.extras ?? []);
+    if (reservation) setCheckInDetails(reservation);
   };
 
   const handleCheckIn = () => {
-    if (!upcomingReservationFromFirebase) return;
+    if (upcomingReservationFromFirebase) {
+      openCheckInDetails(upcomingReservationFromFirebase.id);
+    }
+  };
+
+  const openCancellation = (reservationId: string) => {
     const reservation = reservations.find(
       (item) =>
-        item.id === upcomingReservationFromFirebase.reservationId ||
-        item.reservationId === upcomingReservationFromFirebase.reservationId,
+        item.id === reservationId || item.reservationId === reservationId,
     );
-    Alert.alert(
-      "Check-in details",
-      `${upcomingReservationFromFirebase.roomName}\n${upcomingReservationFromFirebase.checkIn} - ${upcomingReservationFromFirebase.checkOut}\n${upcomingReservationFromFirebase.nights} night(s) · ${reservation?.guests ?? 1} guest(s)\nExtras: ${reservation?.extras?.join(", ") || "None"}`,
-    );
+    if (!reservation) return;
+    setCancellationTarget(reservation);
+    setCancellationReason("");
+    setOtherCancellationReason("");
+    setCancelledSuccessfully(false);
+  };
+
+  const confirmCancellation = async () => {
+    if (!cancellationTarget || !cancellationReason) return;
+    const reason =
+      cancellationReason === "Other"
+        ? otherCancellationReason.trim() || "Other"
+        : cancellationReason;
+    setCancelling(true);
+    try {
+      await cancelReservation(cancellationTarget, reason);
+      setCancelledSuccessfully(true);
+    } catch (error) {
+      Alert.alert(
+        "StayLink",
+        error instanceof Error
+          ? error.message
+          : "Unable to cancel this reservation.",
+      );
+    } finally {
+      setCancelling(false);
+    }
   };
 
   if (!fontsLoaded) return null;
-
-  const editNights = Math.max(
-    1,
-    Math.ceil((editCheckOut.getTime() - editCheckIn.getTime()) / 86400000),
-  );
-  const editRoomPrice =
-    (Number(editing?.roomPrice ?? editing?.total ?? 0) /
-      Math.max(1, Number(editing?.nights ?? 1))) *
-    editNights;
-  const editExtrasPrice = editExtras.reduce(
-    (sum, extra) => sum + (extra === "Breakfast" ? 25 : 80),
-    0,
-  );
-  const openEditDatePicker = (field: "checkIn" | "checkOut") => {
-    const value = field === "checkIn" ? editCheckIn : editCheckOut;
-    DateTimePickerAndroid.open({
-      value,
-      mode: "date",
-      display: "calendar",
-      onChange: (_event, date) => {
-        if (!date) return;
-        if (field === "checkIn") setEditCheckIn(date);
-        else if (date > editCheckIn) setEditCheckOut(date);
-      },
-    });
-  };
 
   return (
     <Screen contentStyle={styles.screenContent}>
@@ -282,6 +291,8 @@ export default function MyStaysScreen() {
                   <Text style={styles.metaLabel}>Check-in</Text>
                   <Text style={styles.metaValue}>
                     {upcomingReservationFromFirebase.checkIn}
+                    {"\n"}
+                    {upcomingReservationFromFirebase.checkInTime}
                   </Text>
                 </View>
 
@@ -310,13 +321,15 @@ export default function MyStaysScreen() {
               <View style={styles.buttonRow}>
                 <Pressable
                   accessibilityRole="button"
-                  onPress={handleModify}
+                  onPress={() =>
+                    openCancellation(upcomingReservationFromFirebase.id)
+                  }
                   style={({ pressed }) => [
-                    styles.secondaryButton,
+                    styles.dangerButton,
                     pressed && styles.buttonPressed,
                   ]}
                 >
-                  <Text style={styles.secondaryButtonText}>Modify</Text>
+                  <Text style={styles.dangerButtonText}>Cancel</Text>
                 </Pressable>
 
                 <Pressable
@@ -343,6 +356,7 @@ export default function MyStaysScreen() {
 
         {additionalUpcomingReservations.map((reservation) => (
           <View key={reservation.reservationId} style={styles.upcomingCard}>
+            <Image source={{ uri: reservation.roomImage }} style={styles.additionalImage} />
             <View style={styles.cardContent}>
               <View style={styles.cardHeaderRow}>
                 <Text style={styles.roomName}>{reservation.roomName}</Text>
@@ -378,6 +392,28 @@ export default function MyStaysScreen() {
                   <Text style={styles.metaLabel}>Total</Text>
                   <Text style={styles.totalValue}>${reservation.total}</Text>
                 </View>
+              </View>
+              <View style={styles.buttonRow}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => openCancellation(reservation.id)}
+                  style={({ pressed }) => [
+                    styles.dangerButton,
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <Text style={styles.dangerButtonText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => openCheckInDetails(reservation.id)}
+                  style={({ pressed }) => [
+                    styles.primaryButton,
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <Text style={styles.primaryButtonText}>Check-in Details</Text>
+                </Pressable>
               </View>
             </View>
           </View>
@@ -429,130 +465,165 @@ export default function MyStaysScreen() {
         </View>
       </ScrollView>
       <Modal
-        visible={Boolean(editing)}
+        visible={Boolean(cancellationTarget)}
         transparent
-        animationType="slide"
-        onRequestClose={() => setEditing(null)}
+        animationType="fade"
+        onRequestClose={() => setCancellationTarget(null)}
       >
         <View style={styles.modalBackdrop}>
-          <View style={styles.editModal}>
-            <Text style={styles.modalTitle}>Modify reservation</Text>
-            <Pressable
-              style={styles.editRow}
-              onPress={() => openEditDatePicker("checkIn")}
-            >
-              <Text style={styles.editLabel}>Check-in</Text>
-              <Text style={styles.editValue}>{editCheckIn.toDateString()}</Text>
-            </Pressable>
-            <Pressable
-              style={styles.editRow}
-              onPress={() => openEditDatePicker("checkOut")}
-            >
-              <Text style={styles.editLabel}>Check-out</Text>
-              <Text style={styles.editValue}>
-                {editCheckOut.toDateString()}
-              </Text>
-            </Pressable>
-            <View style={styles.editRow}>
-              <Text style={styles.editLabel}>Nights</Text>
-              <Text style={styles.editValue}>{editNights}</Text>
+          {cancellationTarget ? (
+            <View style={styles.detailsModal}>
+              {cancelledSuccessfully ? (
+                <>
+                  <Text style={styles.detailsRoom}>
+                    Reservation Cancelled
+                  </Text>
+                  <Text style={styles.detailsLine}>
+                    Your reservation has been cancelled successfully.
+                  </Text>
+                  <Pressable
+                    onPress={() => setCancellationTarget(null)}
+                    style={styles.detailsCloseButton}
+                  >
+                    <Text style={styles.primaryButtonText}>Close</Text>
+                  </Pressable>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.modalTitle}>Cancel reservation</Text>
+                  <Text style={styles.detailsLine}>
+                    Free cancellation until 48 hours before check-in.
+                    Cancellations within 48 hours will incur a 1-night fee.
+                  </Text>
+                  <Text style={styles.detailsExtrasTitle}>
+                    Why are you canceling?
+                  </Text>
+                  {[
+                    "Change of plans",
+                    "Booked by mistake",
+                    "Found a better option",
+                    "Other",
+                  ].map((reason) => (
+                    <Pressable
+                      key={reason}
+                      onPress={() => setCancellationReason(reason)}
+                      style={[
+                        styles.reasonOption,
+                        cancellationReason === reason &&
+                          styles.reasonOptionActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.reasonText,
+                          cancellationReason === reason &&
+                            styles.reasonTextActive,
+                        ]}
+                      >
+                        {reason}
+                      </Text>
+                    </Pressable>
+                  ))}
+                  {cancellationReason === "Other" ? (
+                    <TextInput
+                      value={otherCancellationReason}
+                      onChangeText={setOtherCancellationReason}
+                      placeholder="Tell us why"
+                      placeholderTextColor={StayLinkColors.mutedText}
+                      style={styles.reasonInput}
+                    />
+                  ) : null}
+                  <View style={styles.modalActions}>
+                    <Pressable
+                      onPress={() => setCancellationTarget(null)}
+                      style={styles.cancelButton}
+                    >
+                      <Text style={styles.cancelText}>Keep Reservation</Text>
+                    </Pressable>
+                    <Pressable
+                      disabled={!cancellationReason || cancelling}
+                      onPress={() => void confirmCancellation()}
+                      style={[
+                        styles.dangerButton,
+                        (!cancellationReason || cancelling) &&
+                          styles.disabledButton,
+                      ]}
+                    >
+                      <Text style={styles.dangerButtonText}>
+                        {cancelling ? "Cancelling..." : "Confirm Cancellation"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                </>
+              )}
             </View>
-            <View style={styles.editRow}>
-              <Text style={styles.editLabel}>Guests</Text>
-              <View style={styles.stepper}>
-                <Pressable
-                  disabled={editGuests <= 1}
-                  onPress={() => setEditGuests(Math.max(1, editGuests - 1))}
-                >
-                  <Text style={styles.stepperText}>-</Text>
-                </Pressable>
-                <Text style={styles.editValue}>{editGuests}</Text>
-                <Pressable
-                  disabled={editGuests >= 8}
-                  onPress={() => setEditGuests(Math.min(8, editGuests + 1))}
-                >
-                  <Text style={styles.stepperText}>+</Text>
-                </Pressable>
-              </View>
-            </View>
-            <Pressable
-              style={styles.editRow}
-              onPress={() =>
-                setEditExtras(
-                  editExtras.includes("Breakfast")
-                    ? editExtras.filter((item) => item !== "Breakfast")
-                    : [...editExtras, "Breakfast"],
-                )
-              }
-            >
-              <Text style={styles.editLabel}>Breakfast (+$25)</Text>
-              <Text style={styles.editValue}>
-                {editExtras.includes("Breakfast") ? "Selected" : "Add"}
+          ) : null}
+        </View>
+      </Modal>
+      <Modal
+        visible={Boolean(checkInDetails)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCheckInDetails(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          {checkInDetails ? (
+            <View style={styles.detailsModal}>
+              <Text style={styles.detailsHotel}>
+                StayLink {checkInDetails.destination || "Manila"}
               </Text>
-            </Pressable>
-            <Pressable
-              style={styles.editRow}
-              onPress={() =>
-                setEditExtras(
-                  editExtras.includes("Wellness spa")
-                    ? editExtras.filter((item) => item !== "Wellness spa")
-                    : [...editExtras, "Wellness spa"],
-                )
-              }
-            >
-              <Text style={styles.editLabel}>Wellness spa (+$80)</Text>
-              <Text style={styles.editValue}>
-                {editExtras.includes("Wellness spa") ? "Selected" : "Add"}
+              <Text style={styles.detailsRoom}>
+                {checkInDetails.roomName ?? "StayLink Reservation"} •{" "}
+                {checkInDetails.location ?? "Panoramic View"}
               </Text>
-            </Pressable>
-            <View style={styles.editRow}>
-              <Text style={styles.editLabel}>Total</Text>
-              <Text style={styles.totalValue}>
-                ${editRoomPrice + editExtrasPrice}
+              <View style={styles.detailsDivider} />
+              <Text style={styles.detailsLine}>
+                <Text style={styles.detailsLabel}>Lead Guest: </Text>
+                {checkInDetails.leadGuest || "Not specified"}
               </Text>
-            </View>
-            <View style={styles.modalActions}>
-              <Pressable
-                onPress={() => setEditing(null)}
-                style={styles.cancelButton}
-              >
-                <Text style={styles.cancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                disabled={savingEdit}
-                onPress={async () => {
-                  if (!editing) return;
-                  setSavingEdit(true);
-                  try {
-                    await updateReservation(editing.id, {
-                      checkIn: editCheckIn.toISOString().slice(0, 10),
-                      checkOut: editCheckOut.toISOString().slice(0, 10),
-                      nights: editNights,
-                      guests: editGuests,
-                      extras: editExtras,
-                      roomPrice: editRoomPrice,
-                      extrasPrice: editExtrasPrice,
-                      totalPrice: editRoomPrice + editExtrasPrice,
-                      total: editRoomPrice + editExtrasPrice,
-                    });
-                    setEditing(null);
-                  } catch {
-                    Alert.alert(
-                      "StayLink",
-                      "Unable to update this reservation.",
-                    );
-                  } finally {
-                    setSavingEdit(false);
-                  }
-                }}
-                style={styles.primaryButton}
-              >
-                <Text style={styles.primaryButtonText}>
-                  {savingEdit ? "Saving..." : "Save changes"}
+              <Text style={styles.detailsLine}>
+                <Text style={styles.detailsLabel}>Reservation ID: </Text>
+                {checkInDetails.reservationId ?? checkInDetails.id}
+              </Text>
+              <Text style={styles.detailsLine}>
+                <Text style={styles.detailsLabel}>Dates: </Text>
+                {normalizeReservationDate(checkInDetails.checkIn)} –{" "}
+                {normalizeReservationDate(checkInDetails.checkOut)} (
+                {Math.max(1, Number(checkInDetails.nights ?? 1))} Night
+                {Number(checkInDetails.nights ?? 1) === 1 ? "" : "s"})
+              </Text>
+              <Text style={styles.detailsLine}>
+                <Text style={styles.detailsLabel}>Guests: </Text>
+                {checkInDetails.guests ?? 1} Guest
+                {(checkInDetails.guests ?? 1) === 1 ? "" : "s"}
+              </Text>
+              <Text style={styles.detailsLine}>
+                <Text style={styles.detailsLabel}>Times: </Text>
+                Check-in: {checkInDetails.checkInTime ?? "3:00 PM"} | Check-out:
+                {" 12:00 PM"}
+              </Text>
+              <Text style={styles.detailsExtrasTitle}>Included Extras:</Text>
+              {(checkInDetails.extras?.length
+                ? checkInDetails.extras
+                : ["None"]
+              ).map((extra) => (
+                <Text key={extra} style={styles.detailsExtra}>
+                  •{" "}
+                  {extra === "Breakfast"
+                    ? "Daily Breakfast"
+                    : extra === "Wellness spa"
+                      ? "Wellness Spa Access"
+                      : extra}
                 </Text>
+              ))}
+              <Pressable
+                onPress={() => setCheckInDetails(null)}
+                style={styles.detailsCloseButton}
+              >
+                <Text style={styles.primaryButtonText}>Close</Text>
               </Pressable>
             </View>
-          </View>
+          ) : null}
         </View>
       </Modal>
     </Screen>
@@ -582,51 +653,67 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     backgroundColor: "rgba(0,0,0,0.65)",
   },
-  editModal: {
+  detailsModal: {
+    width: "92%",
     backgroundColor: StayLinkColors.card,
-    borderTopLeftRadius: StayLinkRadius.xl,
-    borderTopRightRadius: StayLinkRadius.xl,
+    borderRadius: StayLinkRadius.xl,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
     padding: StayLinkSpacing.lg,
     gap: StayLinkSpacing.sm,
+  },
+  detailsHotel: {
+    color: StayLinkColors.lightGold,
+    fontFamily: "Outfit_700Bold",
+    fontSize: 13,
+    letterSpacing: 1,
+    textTransform: "uppercase",
+  },
+  detailsRoom: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "PlayfairDisplay_700Bold",
+    fontSize: 23,
+    lineHeight: 29,
+  },
+  detailsDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: StayLinkColors.border,
+    marginVertical: StayLinkSpacing.xs,
+  },
+  detailsLine: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  detailsLabel: {
+    fontFamily: "Outfit_700Bold",
+  },
+  detailsExtrasTitle: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_700Bold",
+    fontSize: 14,
+    marginTop: StayLinkSpacing.xs,
+  },
+  detailsExtra: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  detailsCloseButton: {
+    backgroundColor: StayLinkColors.gold,
+    borderRadius: StayLinkRadius.md,
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: StayLinkSpacing.sm,
   },
   modalTitle: {
     color: StayLinkColors.primaryText,
     fontFamily: "PlayfairDisplay_700Bold",
     fontSize: 26,
     marginBottom: StayLinkSpacing.xs,
-  },
-  editRow: {
-    minHeight: 46,
-    paddingHorizontal: StayLinkSpacing.md,
-    borderRadius: StayLinkRadius.md,
-    backgroundColor: StayLinkColors.secondaryCard,
-    borderWidth: 1,
-    borderColor: StayLinkColors.border,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: StayLinkSpacing.sm,
-  },
-  editLabel: {
-    color: StayLinkColors.mutedText,
-    fontFamily: "Outfit_500Medium",
-    fontSize: 13,
-    flex: 1,
-  },
-  editValue: {
-    color: StayLinkColors.primaryText,
-    fontFamily: "Outfit_600SemiBold",
-    fontSize: 14,
-  },
-  stepper: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: StayLinkSpacing.md,
-  },
-  stepperText: {
-    color: StayLinkColors.lightGold,
-    fontFamily: "Outfit_700Bold",
-    fontSize: 22,
   },
   modalActions: {
     flexDirection: "row",
@@ -714,12 +801,17 @@ const styles = StyleSheet.create({
   },
   image: {
     width: "100%",
-    height: 210,
+    height: 170,
+    backgroundColor: StayLinkColors.secondaryCard,
+  },
+  additionalImage: {
+    width: "100%",
+    height: 120,
     backgroundColor: StayLinkColors.secondaryCard,
   },
   cardContent: {
-    padding: StayLinkSpacing.lg,
-    gap: StayLinkSpacing.md,
+    padding: StayLinkSpacing.md,
+    gap: StayLinkSpacing.sm,
   },
   cardHeaderRow: {
     flexDirection: "row",
@@ -758,14 +850,14 @@ const styles = StyleSheet.create({
   metaGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: StayLinkSpacing.sm,
+    gap: 8,
   },
   metaItem: {
-    width: "48%",
+    width: "47%",
     backgroundColor: StayLinkColors.secondaryCard,
     borderRadius: StayLinkRadius.md,
-    padding: StayLinkSpacing.sm,
-    gap: 4,
+    padding: 10,
+    gap: 2,
     borderWidth: 1,
     borderColor: StayLinkColors.border,
   },
@@ -819,6 +911,58 @@ const styles = StyleSheet.create({
     color: StayLinkColors.primaryText,
     fontFamily: "Outfit_700Bold",
     fontSize: 14,
+  },
+  dangerButton: {
+    flex: 1,
+    backgroundColor: "rgba(184, 70, 70, 0.18)",
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    borderColor: "rgba(244, 166, 166, 0.45)",
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: StayLinkSpacing.sm,
+  },
+  dangerButtonText: {
+    color: "#F4A6A6",
+    fontFamily: "Outfit_700Bold",
+    fontSize: 13,
+    textAlign: "center",
+  },
+  disabledButton: {
+    opacity: 0.45,
+  },
+  reasonOption: {
+    minHeight: 42,
+    paddingHorizontal: StayLinkSpacing.md,
+    justifyContent: "center",
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    backgroundColor: StayLinkColors.secondaryCard,
+  },
+  reasonOptionActive: {
+    backgroundColor: "rgba(200, 146, 42, 0.12)",
+    borderColor: "rgba(200, 146, 42, 0.45)",
+  },
+  reasonText: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_500Medium",
+    fontSize: 14,
+  },
+  reasonTextActive: {
+    color: StayLinkColors.lightGold,
+    fontFamily: "Outfit_700Bold",
+  },
+  reasonInput: {
+    minHeight: 46,
+    paddingHorizontal: StayLinkSpacing.md,
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    backgroundColor: StayLinkColors.secondaryCard,
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_400Regular",
   },
   primaryButtonText: {
     color: StayLinkColors.background,
