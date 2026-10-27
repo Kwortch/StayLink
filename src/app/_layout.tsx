@@ -1,18 +1,58 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
-import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
+import { Redirect, Stack, useSegments } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import { useEffect, useState } from "react";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
+import { StayLinkColors } from "@/constants/theme";
+import { subscribeToAuthState } from "@/lib/firebase";
 
-SplashScreen.preventAutoHideAsync();
-
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+export default function RootLayout() {
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <AppTabs />
-    </ThemeProvider>
+    <SafeAreaProvider>
+      <StatusBar style="light" />
+      <AuthGate />
+    </SafeAreaProvider>
+  );
+}
+
+function AuthGate() {
+  const segments = useSegments();
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSignedIn, setIsSignedIn] = useState(false);
+
+  useEffect(() => {
+    return subscribeToAuthState((user) => {
+      setIsSignedIn(Boolean(user));
+      setIsLoading(false);
+    });
+  }, []);
+
+  const currentRoute = segments[0];
+  const isPublicRoute = currentRoute === "login" || currentRoute === "register";
+
+  if (isLoading) {
+    return null;
+  }
+
+  if (!isSignedIn && !isPublicRoute) {
+    return <Redirect href="/login" />;
+  }
+
+  if (isSignedIn && isPublicRoute) {
+    return <Redirect href="/discover" />;
+  }
+
+  return (
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        contentStyle: { backgroundColor: StayLinkColors.background },
+      }}
+    >
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="room/[id]" />
+      <Stack.Screen name="login" />
+      <Stack.Screen name="register" />
+    </Stack>
   );
 }
