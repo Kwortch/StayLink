@@ -10,7 +10,6 @@ import {
   PlayfairDisplay_700Bold,
 } from "@expo-google-fonts/playfair-display";
 import { useFonts } from "expo-font";
-import { LinearGradient } from "expo-linear-gradient";
 import {
   Modal,
   Pressable,
@@ -31,8 +30,6 @@ import { auth } from "@/firebase/config";
 import {
   defaultPreferences,
   getDefaultProfile,
-  getMembershipForPoints,
-  membershipLevels,
   saveUserProfile,
   subscribeToReservationsForCurrentUser,
   subscribeToUserProfile,
@@ -194,24 +191,6 @@ export default function ProfileScreen() {
       notifications: "Configured",
     }));
 
-  const membership =
-    membershipLevels.find(
-      (level) =>
-        level.name === (profile.membershipStatus ?? profile.membership),
-    ) ?? getMembershipForPoints(profile.loyaltyPoints);
-  const nextMembership =
-    membership.name === "Diamond"
-      ? null
-      : membershipLevels.find((level) => level.minimum > profile.loyaltyPoints);
-  const pointsToNext = nextMembership
-    ? nextMembership.minimum - profile.loyaltyPoints
-    : 0;
-  const progress = nextMembership
-    ? ((profile.loyaltyPoints - membership.minimum) /
-        (nextMembership.minimum - membership.minimum)) *
-      100
-    : 100;
-
   return (
     <Screen contentStyle={styles.screenContent}>
       <ScrollView
@@ -243,43 +222,6 @@ export default function ProfileScreen() {
               </Text>
             </View>
           </View>
-        </View>
-
-        <View style={styles.card}>
-          <View style={styles.pointsHeader}>
-            <Text style={styles.cardTitle}>Loyalty Points</Text>
-            <Text style={styles.pointsValue}>
-              {profile.loyaltyPoints.toLocaleString()} points
-            </Text>
-          </View>
-
-          <Text style={styles.progressText}>
-            {profile.loyaltyPoints.toLocaleString()} /{" "}
-            {nextMembership?.minimum ?? profile.loyaltyPoints}
-          </Text>
-
-          <View style={styles.progressTrack}>
-            <LinearGradient
-              colors={["#C8922A", "#E8B84B"]}
-              start={{ x: 0, y: 0.5 }}
-              end={{ x: 1, y: 0.5 }}
-              style={[styles.progressFill, { width: `${progress}%` }]}
-            />
-          </View>
-
-          <Text style={styles.goalText}>
-            {nextMembership
-              ? `Next level: ${nextMembership.name}`
-              : "Highest membership level reached"}
-          </Text>
-          <Text style={styles.remainingText}>
-            {nextMembership
-              ? `${pointsToNext} points to go`
-              : "Diamond membership"}
-          </Text>
-          <Text style={styles.discountText}>
-            Current discount: {membership.discount}%
-          </Text>
         </View>
 
         <View style={styles.statRow}>
@@ -617,63 +559,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     letterSpacing: 0.8,
     textTransform: "uppercase",
-  },
-  card: {
-    backgroundColor: StayLinkColors.card,
-    borderRadius: StayLinkRadius.xl,
-    borderWidth: 1,
-    borderColor: StayLinkColors.border,
-    padding: StayLinkSpacing.lg,
-    gap: StayLinkSpacing.sm,
-  },
-  pointsHeader: {
-    flexDirection: "row",
-    alignItems: "baseline",
-    justifyContent: "space-between",
-    gap: StayLinkSpacing.sm,
-  },
-  cardTitle: {
-    color: StayLinkColors.primaryText,
-    fontFamily: "PlayfairDisplay_600SemiBold",
-    fontSize: 24,
-  },
-  pointsValue: {
-    color: StayLinkColors.gold,
-    fontFamily: "Outfit_700Bold",
-    fontSize: 13,
-  },
-  progressText: {
-    color: StayLinkColors.mutedText,
-    fontFamily: "Outfit_500Medium",
-    fontSize: 12,
-  },
-  progressTrack: {
-    height: 12,
-    backgroundColor: StayLinkColors.secondaryCard,
-    borderRadius: 999,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "rgba(200,146,42,0.18)",
-  },
-  progressFill: {
-    height: "100%",
-    borderRadius: 999,
-    backgroundColor: "linear-gradient(90deg, #C8922A 0%, #E8B84B 100%)",
-  },
-  goalText: {
-    color: StayLinkColors.primaryText,
-    fontFamily: "Outfit_600SemiBold",
-    fontSize: 13,
-  },
-  remainingText: {
-    color: StayLinkColors.mutedText,
-    fontFamily: "Outfit_400Regular",
-    fontSize: 12,
-  },
-  discountText: {
-    color: StayLinkColors.lightGold,
-    fontFamily: "Outfit_600SemiBold",
-    fontSize: 13,
   },
   statRow: {
     flexDirection: "row",

@@ -35,6 +35,19 @@ The app is built with Expo and React Native, uses Expo Router for file-based nav
 - Review the cancellation policy and provide a cancellation reason.
 - Restore room inventory when a reservation is cancelled.
 
+### Loyalty and vouchers
+
+- Earn points from the final booking amount after the stay has ended.
+- Automatically lock eligible reservations after checkout; locked reservations cannot be cancelled.
+- Use the requested membership tiers:
+  - Bronze: 0–4,999 points, 1 point per ₱100 spent.
+  - Silver: 5,000–14,999 points, 1.5 points per ₱100 spent and a 5% discount.
+  - Gold: 15,000–29,999 points, 2 points per ₱100 spent and a 10% discount.
+  - Platinum/Diamond: 30,000+ points, 3 points per ₱100 spent and a 15% discount.
+- Browse tier benefits in the dedicated Rewards tab.
+- Redeem available food, welcome drink, breakfast, and airport transfer vouchers with points.
+- Keep redeemed vouchers in the user profile for later use.
+
 ### Profile and preferences
 
 - Manage account details, address, and contact number.

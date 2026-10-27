@@ -65,6 +65,13 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="loyalty"
+        options={{
+          title: "Rewards",
+          tabBarIcon: ({ color }) => tabIcon("gift-outline", color),
+        }}
+      />
+      <Tabs.Screen
         name="profile"
         options={{
           title: "Profile",

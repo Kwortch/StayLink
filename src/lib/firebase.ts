@@ -48,6 +48,9 @@ export type FirebaseReservation = {
   createdAt?: string;
   updatedAt?: string;
   availableRooms?: number;
+  loyaltyPointsAwarded?: boolean;
+  loyaltyPointsEarned?: number;
+  loyaltyLockedAt?: string;
 };
 
 export type FirebaseHotel = {
@@ -90,7 +93,23 @@ export type FirebaseUserProfile = {
   loyaltyPoints: number;
   membership: string;
   membershipStatus?: string;
+  vouchers?: UserVoucher[];
   preferences: UserPreferences;
+};
+
+export type UserVoucher = {
+  id: string;
+  name: string;
+  description: string;
+  redeemedAt: string;
+};
+
+export type LoyaltyVoucher = {
+  id: string;
+  name: string;
+  description: string;
+  cost: number;
+  minimumTier: string;
 };
 
 export const defaultPreferences: UserPreferences = {
@@ -106,13 +125,70 @@ export const defaultPreferences: UserPreferences = {
 };
 
 export const membershipLevels = [
-  { name: "Non-Member", minimum: 0, discount: 0 },
-  { name: "Bronze", minimum: 100, discount: 2 },
-  { name: "Silver", minimum: 200, discount: 4 },
-  { name: "Gold", minimum: 400, discount: 6 },
-  { name: "Platinum", minimum: 800, discount: 8 },
-  { name: "Diamond", minimum: 1600, discount: 10 },
+  {
+    name: "Bronze",
+    minimum: 0,
+    discount: 0,
+    pointsPer100: 1,
+    perks: ["Member-only rates", "Access to food vouchers"],
+  },
+  {
+    name: "Silver",
+    minimum: 5_000,
+    discount: 5,
+    pointsPer100: 1.5,
+    perks: ["5% discount", "Free late checkout at 1 PM", "Welcome drink voucher"],
+  },
+  {
+    name: "Gold",
+    minimum: 15_000,
+    discount: 10,
+    pointsPer100: 2,
+    perks: ["10% discount", "Free breakfast", "Priority room upgrade unlocks"],
+  },
+  {
+    name: "Platinum / Diamond",
+    minimum: 30_000,
+    discount: 15,
+    pointsPer100: 3,
+    perks: [
+      "15% discount",
+      "Free airport transfer voucher",
+      "Guaranteed suite upgrade unlocks",
+    ],
+  },
 ] as const;
+
+export const loyaltyVouchers: LoyaltyVoucher[] = [
+  {
+    id: "food-voucher",
+    name: "Food Voucher",
+    description: "Use toward dining at the StayLink restaurant.",
+    cost: 500,
+    minimumTier: "Bronze",
+  },
+  {
+    id: "welcome-drink",
+    name: "Welcome Drink",
+    description: "One complimentary welcome drink on arrival.",
+    cost: 800,
+    minimumTier: "Silver",
+  },
+  {
+    id: "breakfast-voucher",
+    name: "Breakfast Voucher",
+    description: "Enjoy breakfast for one guest during your stay.",
+    cost: 1_500,
+    minimumTier: "Gold",
+  },
+  {
+    id: "airport-transfer",
+    name: "Airport Transfer",
+    description: "Redeem one complimentary airport transfer.",
+    cost: 3_000,
+    minimumTier: "Platinum / Diamond",
+  },
+];
 
 export function getMembershipForPoints(points: number) {
   return (
@@ -131,7 +207,8 @@ export function getDefaultProfile(user: User): FirebaseUserProfile {
     email: user.email ?? "",
     createdAt: new Date().toISOString(),
     loyaltyPoints: 0,
-    membership: "Non-Member",
+    membership: "Bronze",
+    vouchers: [],
     preferences: { ...defaultPreferences },
   };
 }
@@ -220,7 +297,15 @@ export async function awardCompletedBookingPoints(
 
   if (!claim.committed) return;
 
-  const earnedPoints = Number(booking.nights ?? 0) * 10;
+  const membership = getMembershipForPoints(
+    Number((await get(ref(database, `users/${user.uid}`))).val()?.loyaltyPoints ?? 0),
+  );
+  const totalSpent = Number(
+    booking.totalPrice ?? booking.total ?? booking.subtotal ?? 0,
+  );
+  const earnedPoints = Math.floor(
+    (totalSpent / 100) * membership.pointsPer100,
+  );
   const profileRef = ref(database, `users/${user.uid}`);
   await runTransaction(profileRef, (current) => {
     const profile = current ?? {};
@@ -233,6 +318,102 @@ export async function awardCompletedBookingPoints(
       membershipStatus: membership,
     };
   });
+
+  await update(bookingRef, {
+    loyaltyPointsEarned: earnedPoints,
+    loyaltyLockedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+export async function lockCompletedReservation(
+  reservation: FirebaseReservation,
+) {
+  const user = firebaseAuth.currentUser;
+  if (!user || reservation.userId !== user.uid || !reservation.checkOut) return;
+
+  const checkout = new Date(`${reservation.checkOut}T23:59:59`);
+  if (Number.isNaN(checkout.getTime()) || checkout > new Date()) return;
+
+  const bookingRef = ref(database, `bookings/${reservation.id}`);
+  const claim = await runTransaction(bookingRef, (current) => {
+    if (
+      !current ||
+      current.userId !== user.uid ||
+      current.status !== "Confirmed" ||
+      current.status === "Cancelled" ||
+      current.status === "Completed"
+    ) {
+      return;
+    }
+
+    return {
+      ...current,
+      status: "Completed",
+      loyaltyLockedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+  });
+
+  if (claim.committed) {
+    await awardCompletedBookingPoints({
+      ...reservation,
+      status: "Completed",
+    });
+  }
+}
+
+export async function redeemLoyaltyVoucher(voucherId: string) {
+  const user = firebaseAuth.currentUser;
+  if (!user) throw new Error("You must be signed in to redeem a voucher.");
+
+  const voucher = loyaltyVouchers.find((item) => item.id === voucherId);
+  if (!voucher) throw new Error("That voucher is no longer available.");
+
+  const profileRef = ref(database, `users/${user.uid}`);
+  const result = await runTransaction(profileRef, (current) => {
+    if (!current) return;
+
+    const points = Number(current.loyaltyPoints ?? 0);
+    const membership = getMembershipForPoints(points);
+    const tierIndex = membershipLevels.findIndex(
+      (level) => level.name === membership.name,
+    );
+    const minimumTierIndex = membershipLevels.findIndex(
+      (level) => level.name === voucher.minimumTier,
+    );
+    const vouchers = Array.isArray(current.vouchers)
+      ? current.vouchers
+      : Object.values(current.vouchers ?? {});
+
+    if (
+      points < voucher.cost ||
+      tierIndex < minimumTierIndex ||
+      vouchers.some((item: UserVoucher) => item.id === voucher.id)
+    ) {
+      return;
+    }
+
+    return {
+      ...current,
+      loyaltyPoints: points - voucher.cost,
+      vouchers: [
+        ...vouchers,
+        {
+          id: voucher.id,
+          name: voucher.name,
+          description: voucher.description,
+          redeemedAt: new Date().toISOString(),
+        },
+      ],
+    };
+  });
+
+  if (!result.committed) {
+    throw new Error(
+      "You need enough points and the required membership tier to redeem this voucher.",
+    );
+  }
 }
 
 export async function updateReservation(

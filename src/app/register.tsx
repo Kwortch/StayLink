@@ -58,7 +58,7 @@ export default function RegisterScreen() {
             phone,
             createdAt: new Date().toISOString(),
             loyaltyPoints: 0,
-            membership: "Non-Member",
+            membership: "Bronze",
             membershipStatus: "Non-Member",
             preferences: defaultPreferences,
           });

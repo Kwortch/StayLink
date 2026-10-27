@@ -34,6 +34,7 @@ import {
   awardCompletedBookingPoints,
   cancelReservation,
   firebaseAuth,
+  lockCompletedReservation,
   subscribeToReservationsForCurrentUser,
   type FirebaseReservation,
 } from "@/lib/firebase";
@@ -145,6 +146,15 @@ export default function MyStaysScreen() {
       if (isMounted) {
         setReservations(data);
         setLoading(false);
+        data
+          .filter(
+            (reservation) =>
+              reservation.status !== "Completed" &&
+              reservation.status !== "Cancelled",
+          )
+          .forEach((reservation) => {
+            void lockCompletedReservation(reservation);
+          });
         data
           .filter((reservation) => reservation.status === "Completed")
           .forEach((reservation) => {
