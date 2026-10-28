@@ -32,9 +32,20 @@ import {
   StayLinkRadius,
   StayLinkSpacing,
 } from "@/constants/theme";
-import { discoverRooms, rooms, type Room } from "@/data/rooms";
+import {
+  applyRoomInventory,
+  discoverRooms,
+  rooms,
+  type Room,
+} from "@/data/rooms";
 import { auth } from "@/firebase/config";
-import { subscribeToHotels, type FirebaseHotel } from "@/lib/firebase";
+import {
+  initializeRoomInventory,
+  subscribeToHotels,
+  subscribeToRoomInventory,
+  type FirebaseHotel,
+  type RoomInventory,
+} from "@/lib/firebase";
 
 type PickerField = "checkIn" | "checkOut";
 
@@ -144,8 +155,18 @@ export default function DiscoverScreen() {
     (typeof promiseItems)[number] | null
   >(null);
   const [hotels, setHotels] = useState<FirebaseHotel[]>([]);
+  const [inventory, setInventory] = useState<Record<string, RoomInventory>>({});
 
   useEffect(() => subscribeToHotels(setHotels), []);
+  useEffect(() => {
+    void Promise.all(
+      rooms.map((room) => initializeRoomInventory(room.id, room.availableRooms)),
+    );
+    return subscribeToRoomInventory(
+      rooms.map((room) => room.id),
+      setInventory,
+    );
+  }, []);
 
   if (!fontsLoaded) {
     return null;
@@ -154,6 +175,9 @@ export default function DiscoverScreen() {
   const localFeaturedRooms = discoverRooms
     .map((id) => rooms.find((room) => room.id === id))
     .filter((room): room is NonNullable<typeof room> => Boolean(room));
+  const liveLocalFeaturedRooms = localFeaturedRooms.map((room) =>
+    applyRoomInventory(room, inventory[room.id]),
+  );
   const firebaseRooms = useMemo<Room[]>(() => {
     return hotels.flatMap((hotel) => {
       const hotelRooms: Array<Record<string, unknown>> = hotel.rooms
@@ -186,6 +210,9 @@ export default function DiscoverScreen() {
           room.destination.toLowerCase() === selectedDestination.toLowerCase(),
       )
     : rooms;
+  const liveLocalRooms = localRooms.map((room) =>
+    applyRoomInventory(room, inventory[room.id]),
+  );
   const filteredFirebaseRooms = firebaseRooms.filter((room) => {
     const hotel = hotels.find((item) =>
       item.rooms ? Object.keys(item.rooms).includes(room.id) : item.id === room.id,
@@ -193,10 +220,10 @@ export default function DiscoverScreen() {
     return !selectedDestination || hotel?.destination?.toLowerCase() === selectedDestination.toLowerCase();
   });
   const featuredRooms = selectedDestination
-    ? [...filteredFirebaseRooms, ...localRooms]
+    ? [...filteredFirebaseRooms, ...liveLocalRooms]
     : hotels.length
-      ? [...filteredFirebaseRooms, ...localFeaturedRooms]
-      : localFeaturedRooms;
+      ? [...filteredFirebaseRooms, ...liveLocalFeaturedRooms]
+      : liveLocalFeaturedRooms;
   const filteredDestinations = destinations.filter((destination) =>
     destination.toLowerCase().includes(destinationInput.toLowerCase()),
   );

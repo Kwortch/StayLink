@@ -46,6 +46,10 @@ export type FirebaseReservation = {
   status?: string;
   nights?: number;
   createdAt?: string;
+  confirmedAt?: string;
+  checkedInAt?: string;
+  completedAt?: string;
+  cancelledAt?: string;
   updatedAt?: string;
   availableRooms?: number;
   loyaltyPointsAwarded?: boolean;
@@ -70,6 +74,14 @@ export type FirebaseHotel = {
   description?: string;
   image?: string;
   availableRooms?: number;
+};
+
+export type RoomInventory = {
+  roomId: string;
+  totalRooms: number;
+  occupiedRooms: number;
+  availableRooms: number;
+  updatedAt?: string;
 };
 
 export type UserPreferences = {
@@ -244,14 +256,23 @@ export async function createReservation(
 
   const inventoryRef = ref(database, `roomInventory/${reservation.roomId}`);
   const inventoryClaim = await runTransaction(inventoryRef, (current) => {
-    const availableRooms =
-      typeof current?.availableRooms === "number"
-        ? current.availableRooms
-        : Number(reservation.availableRooms ?? 0);
+    const totalRooms = Number(
+      current?.totalRooms ?? reservation.availableRooms ?? 0,
+    );
+    const occupiedRooms = Number(
+      current?.occupiedRooms ?? Math.max(0, totalRooms - Number(reservation.availableRooms ?? 0)),
+    );
+    const availableRooms = Math.max(
+      0,
+      Number(current?.availableRooms ?? totalRooms - occupiedRooms),
+    );
 
     if (availableRooms <= 0) return;
 
     return {
+      roomId: reservation.roomId,
+      totalRooms,
+      occupiedRooms: occupiedRooms + 1,
       availableRooms: availableRooms - 1,
       updatedAt: new Date().toISOString(),
     };
@@ -263,17 +284,22 @@ export async function createReservation(
 
   const reservationRef = push(ref(database, "bookings"));
   const reservationId = reservation.reservationId ?? reservationRef.key;
+  const confirmedAt = new Date().toISOString();
   try {
     await set(reservationRef, {
       ...reservation,
       userId: user.uid,
       reservationId,
-      createdAt: new Date().toISOString(),
+      createdAt: confirmedAt,
+      confirmedAt,
     });
     return reservationId;
   } catch (error) {
     await runTransaction(inventoryRef, (current) => ({
       ...(current ?? {}),
+      roomId: reservation.roomId,
+      totalRooms: Number(current?.totalRooms ?? reservation.availableRooms ?? 0),
+      occupiedRooms: Math.max(0, Number(current?.occupiedRooms ?? 1) - 1),
       availableRooms: Number(current?.availableRooms ?? 0) + 1,
       updatedAt: new Date().toISOString(),
     }));
@@ -332,7 +358,7 @@ export async function lockCompletedReservation(
   const user = firebaseAuth.currentUser;
   if (!user || reservation.userId !== user.uid || !reservation.checkOut) return;
 
-  const checkout = new Date(`${reservation.checkOut}T23:59:59`);
+  const checkout = new Date(`${reservation.checkOut}T12:00:00`);
   if (Number.isNaN(checkout.getTime()) || checkout > new Date()) return;
 
   const bookingRef = ref(database, `bookings/${reservation.id}`);
@@ -340,9 +366,7 @@ export async function lockCompletedReservation(
     if (
       !current ||
       current.userId !== user.uid ||
-      current.status !== "Confirmed" ||
-      current.status === "Cancelled" ||
-      current.status === "Completed"
+      (current.status !== "Confirmed" && current.status !== "Checked In")
     ) {
       return;
     }
@@ -350,16 +374,99 @@ export async function lockCompletedReservation(
     return {
       ...current,
       status: "Completed",
-      loyaltyLockedAt: new Date().toISOString(),
+      completedAt: checkout.toISOString(),
+      loyaltyLockedAt: checkout.toISOString(),
       updatedAt: new Date().toISOString(),
     };
   });
 
   if (claim.committed) {
+    if (reservation.roomId) {
+      const inventoryRef = ref(
+        database,
+        `roomInventory/${reservation.roomId}`,
+      );
+      await runTransaction(inventoryRef, (inventory) => {
+        if (!inventory) return;
+        const totalRooms = Number(
+          inventory.totalRooms ?? reservation.availableRooms ?? 0,
+        );
+        const occupiedRooms = Math.max(
+          0,
+          Number(inventory.occupiedRooms ?? 1) - 1,
+        );
+        return {
+          ...inventory,
+          roomId: reservation.roomId,
+          totalRooms,
+          occupiedRooms,
+          availableRooms: Math.max(0, totalRooms - occupiedRooms),
+          updatedAt: new Date().toISOString(),
+        };
+      });
+    }
     await awardCompletedBookingPoints({
       ...reservation,
       status: "Completed",
     });
+  }
+}
+
+export async function checkInReservation(reservation: FirebaseReservation) {
+  const user = firebaseAuth.currentUser;
+  if (!user) throw new Error("You must be signed in to check in.");
+
+  const bookingRef = ref(database, `bookings/${reservation.id}`);
+  const now = new Date();
+  const checkInDate = reservation.checkIn
+    ? new Date(`${reservation.checkIn}T00:00:00`)
+    : null;
+  const checkOutDate = reservation.checkOut
+    ? new Date(`${reservation.checkOut}T12:00:00`)
+    : null;
+  const checkInTime = reservation.checkInTime?.match(
+    /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i,
+  );
+  if (checkInDate) {
+    if (checkInTime) {
+      let hours = Number(checkInTime[1]) % 12;
+      if (checkInTime[3].toUpperCase() === "PM") hours += 12;
+      checkInDate.setHours(hours, Number(checkInTime[2]), 0, 0);
+    } else {
+      checkInDate.setHours(15, 0, 0, 0);
+    }
+  }
+
+  if (
+    !checkInDate ||
+    !checkOutDate ||
+    Number.isNaN(checkInDate.getTime()) ||
+    Number.isNaN(checkOutDate.getTime()) ||
+    now < checkInDate ||
+    now >= checkOutDate
+  ) {
+    throw new Error("Check-in is available during your reservation dates.");
+  }
+
+  const result = await runTransaction(bookingRef, (current) => {
+    if (
+      !current ||
+      current.userId !== user.uid ||
+      current.status !== "Confirmed"
+    ) {
+      return;
+    }
+
+    return {
+      ...current,
+      status: "Checked In",
+      checkedInAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+  });
+
+  if (!result.committed) {
+    throw new Error("This reservation cannot be checked in.");
   }
 }
 
@@ -446,23 +553,85 @@ export async function cancelReservation(
     throw new Error("Reservation not found.");
   }
   if (current.status === "Cancelled") return;
-  if (current.status === "Completed") {
-    throw new Error("Completed reservations cannot be cancelled.");
+  if (current.status === "Completed" || current.status === "Checked In") {
+    throw new Error("Checked-in or completed reservations cannot be cancelled.");
   }
 
-  await update(bookingRef, {
-    status: "Cancelled",
-    cancellationReason: reason,
-    cancelledAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+  const cancelledAt = new Date().toISOString();
+  const cancellation = await runTransaction(bookingRef, (booking) => {
+    if (
+      !booking ||
+      booking.userId !== user.uid ||
+      (booking.status !== "Confirmed" && booking.status !== "Pending")
+    ) {
+      return;
+    }
+
+    return {
+      ...booking,
+      status: "Cancelled",
+      cancellationReason: reason,
+      cancelledAt,
+      updatedAt: cancelledAt,
+    };
   });
+  if (!cancellation.committed) {
+    throw new Error("This reservation can no longer be cancelled.");
+  }
 
   const inventoryRef = ref(database, `roomInventory/${reservation.roomId}`);
   await runTransaction(inventoryRef, (inventory) => ({
     ...(inventory ?? {}),
+    roomId: reservation.roomId,
+    totalRooms: Number(inventory?.totalRooms ?? reservation.availableRooms ?? 0),
+    occupiedRooms: Math.max(0, Number(inventory?.occupiedRooms ?? 1) - 1),
     availableRooms: Number(inventory?.availableRooms ?? 0) + 1,
     updatedAt: new Date().toISOString(),
   }));
+}
+
+export function subscribeToRoomInventory(
+  roomIds: string[],
+  callback: (inventory: Record<string, RoomInventory>) => void,
+): Unsubscribe {
+  const inventory: Record<string, RoomInventory> = {};
+  const unsubscribers = roomIds.map((roomId) =>
+    onValue(ref(database, `roomInventory/${roomId}`), (snapshot) => {
+      const value = snapshot.val();
+      if (value) {
+        inventory[roomId] = {
+          roomId,
+          totalRooms: Number(value.totalRooms ?? value.availableRooms ?? 0),
+          occupiedRooms: Number(value.occupiedRooms ?? 0),
+          availableRooms: Number(
+            value.availableRooms ??
+              Number(value.totalRooms ?? 0) - Number(value.occupiedRooms ?? 0),
+          ),
+          updatedAt: value.updatedAt,
+        };
+      }
+      callback({ ...inventory });
+    }),
+  );
+
+  return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
+}
+
+export async function initializeRoomInventory(
+  roomId: string,
+  initialAvailableRooms: number,
+) {
+  const inventoryRef = ref(database, `roomInventory/${roomId}`);
+  await runTransaction(inventoryRef, (current) => {
+    if (current) return;
+    return {
+      roomId,
+      totalRooms: initialAvailableRooms,
+      occupiedRooms: 0,
+      availableRooms: initialAvailableRooms,
+      updatedAt: new Date().toISOString(),
+    };
+  });
 }
 
 export function subscribeToReservationsForCurrentUser(

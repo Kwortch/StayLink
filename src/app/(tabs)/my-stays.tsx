@@ -10,7 +10,6 @@ import {
   PlayfairDisplay_700Bold,
 } from "@expo-google-fonts/playfair-display";
 import { useFonts } from "expo-font";
-import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
@@ -33,6 +32,7 @@ import {
 import {
   awardCompletedBookingPoints,
   cancelReservation,
+  checkInReservation,
   firebaseAuth,
   lockCompletedReservation,
   subscribeToReservationsForCurrentUser,
@@ -75,6 +75,45 @@ function normalizeReservationDate(dateValue?: string): string {
   return dateValue;
 }
 
+function formatExactTimestamp(timestamp?: string): string {
+  if (!timestamp) return "Not recorded";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "Not recorded";
+  return new Intl.DateTimeFormat("en-PH", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function isCheckInAvailable(reservation: FirebaseReservation): boolean {
+  if (
+    reservation.status !== "Confirmed" ||
+    !reservation.checkIn ||
+    !reservation.checkOut
+  ) {
+    return false;
+  }
+  const now = new Date();
+  const checkInDate = new Date(`${reservation.checkIn}T00:00:00`);
+  const timeParts = reservation.checkInTime?.match(
+    /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i,
+  );
+  if (timeParts) {
+    let hours = Number(timeParts[1]) % 12;
+    if (timeParts[3].toUpperCase() === "PM") hours += 12;
+    checkInDate.setHours(hours, Number(timeParts[2]), 0, 0);
+  } else {
+    checkInDate.setHours(15, 0, 0, 0);
+  }
+  const checkOutDate = new Date(`${reservation.checkOut}T12:00:00`);
+  return (
+    !Number.isNaN(checkInDate.getTime()) &&
+    !Number.isNaN(checkOutDate.getTime()) &&
+    now >= checkInDate &&
+    now < checkOutDate
+  );
+}
+
 function formatReservationCard(
   reservation: FirebaseReservation,
 ): ReservationCardState | null {
@@ -113,7 +152,6 @@ function formatReservationCard(
 }
 
 export default function MyStaysScreen() {
-  const router = useRouter();
   const [reservations, setReservations] = useState<FirebaseReservation[]>([]);
   const [loading, setLoading] = useState(false);
   const [checkInDetails, setCheckInDetails] =
@@ -123,6 +161,7 @@ export default function MyStaysScreen() {
   const [cancellationReason, setCancellationReason] = useState("");
   const [otherCancellationReason, setOtherCancellationReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
+  const [checkingIn, setCheckingIn] = useState<string | null>(null);
   const [cancelledSuccessfully, setCancelledSuccessfully] = useState(false);
 
   const [fontsLoaded] = useFonts({
@@ -246,6 +285,26 @@ export default function MyStaysScreen() {
     }
   };
 
+  const checkIn = async (reservation: FirebaseReservation) => {
+    setCheckingIn(reservation.id);
+    try {
+      await checkInReservation(reservation);
+      Alert.alert("StayLink", "You have checked in successfully.");
+    } catch (error) {
+      Alert.alert(
+        "StayLink",
+        error instanceof Error ? error.message : "Unable to check in.",
+      );
+    } finally {
+      setCheckingIn(null);
+    }
+  };
+
+  const checkInById = (reservationId: string) => {
+    const reservation = reservations.find((item) => item.id === reservationId);
+    if (reservation) void checkIn(reservation);
+  };
+
   if (!fontsLoaded) return null;
 
   return (
@@ -329,18 +388,20 @@ export default function MyStaysScreen() {
               </View>
 
               <View style={styles.buttonRow}>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() =>
-                    openCancellation(upcomingReservationFromFirebase.id)
-                  }
-                  style={({ pressed }) => [
-                    styles.dangerButton,
-                    pressed && styles.buttonPressed,
-                  ]}
-                >
-                  <Text style={styles.dangerButtonText}>Cancel</Text>
-                </Pressable>
+                {upcomingReservationFromFirebase.status === "Confirmed" ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() =>
+                      openCancellation(upcomingReservationFromFirebase.id)
+                    }
+                    style={({ pressed }) => [
+                      styles.dangerButton,
+                      pressed && styles.buttonPressed,
+                    ]}
+                  >
+                    <Text style={styles.dangerButtonText}>Cancel</Text>
+                  </Pressable>
+                ) : null}
 
                 <Pressable
                   accessibilityRole="button"
@@ -353,6 +414,23 @@ export default function MyStaysScreen() {
                   <Text style={styles.primaryButtonText}>Check-in Details</Text>
                 </Pressable>
               </View>
+              {isCheckInAvailable(upcomingReservationFromFirebase) ? (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={checkingIn === upcomingReservationFromFirebase.id}
+                  onPress={() => void checkIn(upcomingReservationFromFirebase)}
+                  style={({ pressed }) => [
+                    styles.checkInButton,
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {checkingIn === upcomingReservationFromFirebase.id
+                      ? "Checking in..."
+                      : "Check In"}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
         ) : (
@@ -404,16 +482,18 @@ export default function MyStaysScreen() {
                 </View>
               </View>
               <View style={styles.buttonRow}>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => openCancellation(reservation.id)}
-                  style={({ pressed }) => [
-                    styles.dangerButton,
-                    pressed && styles.buttonPressed,
-                  ]}
-                >
-                  <Text style={styles.dangerButtonText}>Cancel</Text>
-                </Pressable>
+                {reservation.status === "Confirmed" ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => openCancellation(reservation.id)}
+                    style={({ pressed }) => [
+                      styles.dangerButton,
+                      pressed && styles.buttonPressed,
+                    ]}
+                  >
+                    <Text style={styles.dangerButtonText}>Cancel</Text>
+                  </Pressable>
+                ) : null}
                 <Pressable
                   accessibilityRole="button"
                   onPress={() => openCheckInDetails(reservation.id)}
@@ -425,6 +505,23 @@ export default function MyStaysScreen() {
                   <Text style={styles.primaryButtonText}>Check-in Details</Text>
                 </Pressable>
               </View>
+              {isCheckInAvailable(reservation) ? (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={checkingIn === reservation.id}
+                  onPress={() => checkInById(reservation.id)}
+                  style={({ pressed }) => [
+                    styles.checkInButton,
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {checkingIn === reservation.id
+                      ? "Checking in..."
+                      : "Check In"}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
         ))}
@@ -435,14 +532,25 @@ export default function MyStaysScreen() {
 
         <View style={styles.historyList}>
           {reservations
-            .filter((reservation) => reservation.status === "Completed")
+            .filter(
+              (reservation) =>
+                reservation.status === "Completed" ||
+                reservation.status === "Cancelled",
+            )
+            .sort((left, right) => {
+              const leftDate = new Date(
+                left.completedAt ?? left.cancelledAt ?? left.updatedAt ?? 0,
+              ).getTime();
+              const rightDate = new Date(
+                right.completedAt ?? right.cancelledAt ?? right.updatedAt ?? 0,
+              ).getTime();
+              return rightDate - leftDate;
+            })
             .map((stay) => (
               <Pressable
                 key={stay.id}
                 accessibilityRole="button"
-                onPress={() =>
-                  stay.roomId && router.push(`/room/${stay.roomId}`)
-                }
+                onPress={() => setCheckInDetails(stay)}
                 style={({ pressed }) => [
                   styles.historyRow,
                   pressed && styles.rowPressed,
@@ -458,7 +566,8 @@ export default function MyStaysScreen() {
                     {stay.roomName ?? "StayLink Reservation"}
                   </Text>
                   <Text style={styles.historyDate}>
-                    {normalizeReservationDate(stay.checkIn)}
+                    {normalizeReservationDate(stay.checkIn)} –{" "}
+                    {normalizeReservationDate(stay.checkOut)}
                   </Text>
                 </View>
 
@@ -472,6 +581,17 @@ export default function MyStaysScreen() {
                 </View>
               </Pressable>
             ))}
+          {!reservations.some(
+            (reservation) =>
+              reservation.status === "Completed" ||
+              reservation.status === "Cancelled",
+          ) ? (
+            <View style={styles.historyEmpty}>
+              <Text style={styles.historyEmptyText}>
+                Completed or cancelled stays will appear here.
+              </Text>
+            </View>
+          ) : null}
         </View>
       </ScrollView>
       <Modal
@@ -612,6 +732,31 @@ export default function MyStaysScreen() {
                 Check-in: {checkInDetails.checkInTime ?? "3:00 PM"} | Check-out:
                 {" 12:00 PM"}
               </Text>
+              <Text style={styles.detailsLine}>
+                <Text style={styles.detailsLabel}>Status: </Text>
+                {checkInDetails.status ?? "Confirmed"}
+              </Text>
+              <Text style={styles.detailsExtrasTitle}>Reservation timeline:</Text>
+              <Text style={styles.timelineLine}>
+                <Text style={styles.detailsLabel}>Confirmed: </Text>
+                {formatExactTimestamp(
+                  checkInDetails.confirmedAt ?? checkInDetails.createdAt,
+                )}
+              </Text>
+              <Text style={styles.timelineLine}>
+                <Text style={styles.detailsLabel}>Checked in: </Text>
+                {formatExactTimestamp(checkInDetails.checkedInAt)}
+              </Text>
+              <Text style={styles.timelineLine}>
+                <Text style={styles.detailsLabel}>Finished: </Text>
+                {formatExactTimestamp(
+                  checkInDetails.completedAt ?? checkInDetails.loyaltyLockedAt,
+                )}
+              </Text>
+              <Text style={styles.timelineLine}>
+                <Text style={styles.detailsLabel}>Cancelled: </Text>
+                {formatExactTimestamp(checkInDetails.cancelledAt)}
+              </Text>
               <Text style={styles.detailsExtrasTitle}>Included Extras:</Text>
               {(checkInDetails.extras?.length
                 ? checkInDetails.extras
@@ -695,6 +840,12 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit_400Regular",
     fontSize: 14,
     lineHeight: 21,
+  },
+  timelineLine: {
+    color: StayLinkColors.mutedText,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 13,
+    lineHeight: 19,
   },
   detailsLabel: {
     fontFamily: "Outfit_700Bold",
@@ -909,6 +1060,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  checkInButton: {
+    backgroundColor: StayLinkColors.gold,
+    borderRadius: StayLinkRadius.md,
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   primaryButton: {
     flex: 1.2,
     backgroundColor: StayLinkColors.gold,
@@ -984,6 +1142,18 @@ const styles = StyleSheet.create({
   },
   historyList: {
     gap: StayLinkSpacing.sm,
+  },
+  historyEmpty: {
+    backgroundColor: StayLinkColors.card,
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    padding: StayLinkSpacing.md,
+  },
+  historyEmptyText: {
+    color: StayLinkColors.mutedText,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 13,
   },
   historyRow: {
     flexDirection: "row",

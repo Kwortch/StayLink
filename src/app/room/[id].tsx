@@ -31,11 +31,13 @@ import {
   StayLinkRadius,
   StayLinkSpacing,
 } from "@/constants/theme";
-import { getRoomById } from "@/data/rooms";
+import { applyRoomInventory, getRoomById } from "@/data/rooms";
 import { auth } from "@/firebase/config";
 import {
   createReservation,
   getDefaultProfile,
+  initializeRoomInventory,
+  subscribeToRoomInventory,
   getMembershipForPoints,
   subscribeToUserProfile,
   type FirebaseUserProfile,
@@ -46,7 +48,7 @@ export default function RoomDetailScreen() {
     id?: string | string[];
     destination?: string | string[];
   }>();
-  const room = getRoomById(params.id);
+  const roomFromCatalog = getRoomById(params.id);
   const destination = Array.isArray(params.destination)
     ? params.destination[0]
     : params.destination;
@@ -71,6 +73,7 @@ export default function RoomDetailScreen() {
   const [profile, setProfile] = useState<FirebaseUserProfile>(() =>
     getDefaultProfile(auth.currentUser!),
   );
+  const [room, setRoom] = useState(roomFromCatalog);
   const [fontsLoaded] = useFonts({
     PlayfairDisplay_400Regular,
     PlayfairDisplay_600SemiBold,
@@ -92,6 +95,17 @@ export default function RoomDetailScreen() {
       ),
     [],
   );
+
+  useEffect(() => {
+    if (!roomFromCatalog) return;
+    void initializeRoomInventory(
+      roomFromCatalog.id,
+      roomFromCatalog.availableRooms,
+    );
+    return subscribeToRoomInventory([roomFromCatalog.id], (inventory) => {
+      setRoom(applyRoomInventory(roomFromCatalog, inventory[roomFromCatalog.id]));
+    });
+  }, [roomFromCatalog]);
 
   if (!fontsLoaded) return null;
 

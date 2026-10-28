@@ -345,6 +345,15 @@ export function getRoomById(roomId?: string | string[]) {
   return rooms.find((room) => room.id === normalizedId);
 }
 
+export function applyRoomInventory(
+  room: Room,
+  inventory?: { availableRooms?: number },
+): Room {
+  return inventory
+    ? { ...room, availableRooms: Math.max(0, inventory.availableRooms ?? 0) }
+    : room;
+}
+
 export const discoverRooms = [
   "deluxe-king-room",
   "premier-ocean-suite",

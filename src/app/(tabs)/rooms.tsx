@@ -11,8 +11,15 @@ import {
 } from "@expo-google-fonts/playfair-display";
 import { useFonts } from "expo-font";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 
 import { FilterPill } from "@/components/filter-pill";
 import { RoomCard } from "@/components/room-card";
@@ -22,7 +29,17 @@ import {
   StayLinkRadius,
   StayLinkSpacing,
 } from "@/constants/theme";
-import { roomTypes, rooms, type RoomType } from "@/data/rooms";
+import {
+  applyRoomInventory,
+  roomTypes,
+  rooms,
+  type RoomType,
+} from "@/data/rooms";
+import {
+  initializeRoomInventory,
+  subscribeToRoomInventory,
+  type RoomInventory,
+} from "@/lib/firebase";
 
 type SortMode = "top-rated" | "price-asc" | "price-desc";
 
@@ -39,8 +56,20 @@ export default function RoomsScreen() {
   });
 
   const [selectedType, setSelectedType] = useState<RoomType | "All">("All");
+  const [searchQuery, setSearchQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("top-rated");
   const [showSortMenu, setShowSortMenu] = useState(false);
+  const [inventory, setInventory] = useState<Record<string, RoomInventory>>({});
+
+  useEffect(() => {
+    void Promise.all(
+      rooms.map((room) => initializeRoomInventory(room.id, room.availableRooms)),
+    );
+    return subscribeToRoomInventory(
+      rooms.map((room) => room.id),
+      setInventory,
+    );
+  }, []);
 
   if (!fontsLoaded) {
     return null;
@@ -49,10 +78,18 @@ export default function RoomsScreen() {
   const filteredRooms = useMemo(() => {
     const nextRooms =
       selectedType === "All"
-        ? [...rooms]
-        : rooms.filter((room) => room.type === selectedType);
+        ? rooms.map((room) => applyRoomInventory(room, inventory[room.id]))
+        : rooms
+            .filter((room) => room.type === selectedType)
+            .map((room) => applyRoomInventory(room, inventory[room.id]));
+    const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+    const searchedRooms = normalizedQuery
+      ? nextRooms.filter((room) =>
+          room.name.toLocaleLowerCase().includes(normalizedQuery),
+        )
+      : nextRooms;
 
-    return [...nextRooms].sort((roomA, roomB) => {
+    return [...searchedRooms].sort((roomA, roomB) => {
       switch (sortMode) {
         case "price-asc":
           return roomA.price - roomB.price;
@@ -63,7 +100,7 @@ export default function RoomsScreen() {
           return roomB.rating - roomA.rating;
       }
     });
-  }, [selectedType, sortMode]);
+  }, [inventory, searchQuery, selectedType, sortMode]);
 
   return (
     <Screen contentStyle={styles.screenContent}>
@@ -78,6 +115,33 @@ export default function RoomsScreen() {
             Thoughtfully curated stays shaped for slow mornings, elevated
             design, and unforgettable coastal luxury.
           </Text>
+        </View>
+
+        <View style={styles.searchWrap}>
+          <TextInput
+            accessibilityLabel="Search rooms by name"
+            autoCapitalize="none"
+            autoCorrect={false}
+            onChangeText={setSearchQuery}
+            placeholder="Search rooms by name"
+            placeholderTextColor={StayLinkColors.mutedText}
+            returnKeyType="search"
+            style={styles.searchInput}
+            value={searchQuery}
+          />
+          {searchQuery ? (
+            <Pressable
+              accessibilityLabel="Clear room search"
+              accessibilityRole="button"
+              onPress={() => setSearchQuery("")}
+              style={({ pressed }) => [
+                styles.clearSearchButton,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.clearSearchText}>×</Text>
+            </Pressable>
+          ) : null}
         </View>
 
         <View style={styles.filterSection}>
@@ -152,14 +216,23 @@ export default function RoomsScreen() {
         </View>
 
         <View style={styles.roomList}>
-          {filteredRooms.map((room) => (
-            <RoomCard
-              key={room.id}
-              room={room}
-              variant="rooms"
-              onPress={() => router.push(`/room/${room.id}`)}
-            />
-          ))}
+          {filteredRooms.length > 0 ? (
+            filteredRooms.map((room) => (
+              <RoomCard
+                key={room.id}
+                room={room}
+                variant="rooms"
+                onPress={() => router.push(`/room/${room.id}`)}
+              />
+            ))
+          ) : (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>No rooms found</Text>
+              <Text style={styles.emptyDescription}>
+                Try a different room name or clear the search.
+              </Text>
+            </View>
+          )}
         </View>
       </ScrollView>
     </Screen>
@@ -197,6 +270,37 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 22,
     maxWidth: 340,
+  },
+  searchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: StayLinkColors.card,
+    borderWidth: 1,
+    borderColor: StayLinkColors.border,
+    borderRadius: StayLinkRadius.md,
+    minHeight: 48,
+    marginBottom: StayLinkSpacing.md,
+  },
+  searchInput: {
+    flex: 1,
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 14,
+    minHeight: 46,
+    paddingHorizontal: StayLinkSpacing.md,
+    paddingVertical: StayLinkSpacing.sm,
+  },
+  clearSearchButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 44,
+    minHeight: 46,
+  },
+  clearSearchText: {
+    color: StayLinkColors.mutedText,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 26,
+    lineHeight: 28,
   },
   filterSection: {
     marginBottom: StayLinkSpacing.md,
@@ -267,5 +371,25 @@ const styles = StyleSheet.create({
   roomList: {
     gap: StayLinkSpacing.md,
     paddingBottom: StayLinkSpacing.xxl,
+  },
+  emptyState: {
+    alignItems: "center",
+    backgroundColor: StayLinkColors.card,
+    borderColor: StayLinkColors.border,
+    borderRadius: StayLinkRadius.lg,
+    borderWidth: 1,
+    padding: StayLinkSpacing.lg,
+    gap: StayLinkSpacing.xs,
+  },
+  emptyTitle: {
+    color: StayLinkColors.primaryText,
+    fontFamily: "Outfit_700Bold",
+    fontSize: 16,
+  },
+  emptyDescription: {
+    color: StayLinkColors.mutedText,
+    fontFamily: "Outfit_400Regular",
+    fontSize: 13,
+    textAlign: "center",
   },
 });
