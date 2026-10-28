@@ -34,7 +34,6 @@ import {
   cancelReservation,
   checkInReservation,
   firebaseAuth,
-  lockCompletedReservation,
   subscribeToReservationsForCurrentUser,
   type FirebaseReservation,
 } from "@/lib/firebase";
@@ -85,6 +84,15 @@ function formatExactTimestamp(timestamp?: string): string {
   }).format(date);
 }
 
+function formatExtras(extras: FirebaseReservation["extras"]): string[] {
+  if (Array.isArray(extras)) return extras;
+  if (!extras) return [];
+  return [
+    ...(extras.breakfast ? ["Breakfast"] : []),
+    ...(extras.spa ? ["Wellness spa"] : []),
+  ];
+}
+
 function isCheckInAvailable(reservation: FirebaseReservation): boolean {
   if (
     reservation.status !== "Confirmed" ||
@@ -117,7 +125,7 @@ function isCheckInAvailable(reservation: FirebaseReservation): boolean {
 function formatReservationCard(
   reservation: FirebaseReservation,
 ): ReservationCardState | null {
-  const roomId = reservation.roomId ?? reservation.id ?? "room";
+  const roomId = String(reservation.roomId ?? reservation.id ?? "room");
   const roomName = reservation.roomName ?? "StayLink Reservation";
   const roomImage =
     reservation.roomImage ??
@@ -147,7 +155,7 @@ function formatReservationCard(
     total,
     status: reservation.status ?? "Confirmed",
     guests: Number(reservation.guests ?? 1),
-    extras: reservation.extras ?? [],
+    extras: formatExtras(reservation.extras),
   };
 }
 
@@ -186,20 +194,14 @@ export default function MyStaysScreen() {
         setReservations(data);
         setLoading(false);
         data
-          .filter(
-            (reservation) =>
-              reservation.status !== "Completed" &&
-              reservation.status !== "Cancelled",
-          )
-          .forEach((reservation) => {
-            void lockCompletedReservation(reservation);
-          });
-        data
           .filter((reservation) => reservation.status === "Completed")
           .forEach((reservation) => {
             void awardCompletedBookingPoints(reservation);
           });
       }
+    }, (error) => {
+      console.error("Unable to load Firestore reservations:", error);
+      if (isMounted) setLoading(false);
     });
 
     return () => {
@@ -213,7 +215,8 @@ export default function MyStaysScreen() {
       .filter(
         (reservation) =>
           reservation.status !== "Completed" &&
-          reservation.status !== "Cancelled",
+          reservation.status !== "Cancelled" &&
+          reservation.status !== "Rejected",
       )
       .map(formatReservationCard)
       .filter((item): item is ReservationCardState => Boolean(item));
@@ -230,7 +233,8 @@ export default function MyStaysScreen() {
       .filter(
         (reservation) =>
           reservation.status !== "Completed" &&
-          reservation.status !== "Cancelled",
+          reservation.status !== "Cancelled" &&
+          reservation.status !== "Rejected",
       )
       .map(formatReservationCard)
       .filter((item): item is ReservationCardState => Boolean(item))
@@ -289,7 +293,10 @@ export default function MyStaysScreen() {
     setCheckingIn(reservation.id);
     try {
       await checkInReservation(reservation);
-      Alert.alert("StayLink", "You have checked in successfully.");
+      Alert.alert(
+        "StayLink",
+        "Your check-in request was sent. Hotel staff will confirm your room and update its status.",
+      );
     } catch (error) {
       Alert.alert(
         "StayLink",
@@ -482,7 +489,8 @@ export default function MyStaysScreen() {
                 </View>
               </View>
               <View style={styles.buttonRow}>
-                {reservation.status === "Confirmed" ? (
+                {reservation.status === "Confirmed" ||
+                reservation.status === "Pending" ? (
                   <Pressable
                     accessibilityRole="button"
                     onPress={() => openCancellation(reservation.id)}
@@ -517,8 +525,8 @@ export default function MyStaysScreen() {
                 >
                   <Text style={styles.primaryButtonText}>
                     {checkingIn === reservation.id
-                      ? "Checking in..."
-                      : "Check In"}
+                      ? "Sending request..."
+                      : "Request check-in"}
                   </Text>
                 </Pressable>
               ) : null}
@@ -535,7 +543,8 @@ export default function MyStaysScreen() {
             .filter(
               (reservation) =>
                 reservation.status === "Completed" ||
-                reservation.status === "Cancelled",
+                reservation.status === "Cancelled" ||
+                reservation.status === "Rejected",
             )
             .sort((left, right) => {
               const leftDate = new Date(
@@ -584,7 +593,8 @@ export default function MyStaysScreen() {
           {!reservations.some(
             (reservation) =>
               reservation.status === "Completed" ||
-              reservation.status === "Cancelled",
+              reservation.status === "Cancelled" ||
+              reservation.status === "Rejected",
           ) ? (
             <View style={styles.historyEmpty}>
               <Text style={styles.historyEmptyText}>
@@ -758,8 +768,8 @@ export default function MyStaysScreen() {
                 {formatExactTimestamp(checkInDetails.cancelledAt)}
               </Text>
               <Text style={styles.detailsExtrasTitle}>Included Extras:</Text>
-              {(checkInDetails.extras?.length
-                ? checkInDetails.extras
+              {(formatExtras(checkInDetails.extras).length
+                ? formatExtras(checkInDetails.extras)
                 : ["None"]
               ).map((extra) => (
                 <Text key={extra} style={styles.detailsExtra}>

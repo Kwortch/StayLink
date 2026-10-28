@@ -399,11 +399,16 @@ export default function RoomDetailScreen() {
                       status: "Confirmed",
                     });
                     setShowBooking(false);
-                    Alert.alert("StayLink", "Your reservation was saved.");
+                    Alert.alert(
+                      "StayLink",
+                      "Your reservation request was sent and is awaiting hotel confirmation.",
+                    );
                   } catch (error) {
                     Alert.alert(
                       "StayLink",
-                      "Unable to save your reservation. Please try again.",
+                      error instanceof Error
+                        ? error.message
+                        : "Unable to save your reservation. Please try again.",
                     );
                   } finally {
                     setIsBooking(false);

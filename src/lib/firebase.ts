@@ -1,11 +1,15 @@
 import { onAuthStateChanged, updateProfile, type User } from "firebase/auth";
 import {
   collection,
-  deleteField,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
+  query as firestoreQuery,
   runTransaction as runFirestoreTransaction,
+  serverTimestamp,
+  updateDoc,
+  where,
 } from "firebase/firestore";
 import {
   equalTo,
@@ -21,7 +25,7 @@ import {
   type Unsubscribe,
 } from "firebase/database";
 
-import { resolveRoomTypeId } from "@/data/rooms";
+import { getRoomById, resolveRoomTypeId } from "@/data/rooms";
 import { auth, database } from "@/firebase/config";
 import { firestore } from "@/firebase/firestore";
 
@@ -42,7 +46,13 @@ export function getFirebaseErrorDetails(error: unknown): string {
 export type FirebaseReservation = {
   id: string;
   userId?: string;
-  roomId?: string;
+  guestUid?: string;
+  roomId?: string | number;
+  roomTypeId?: string | number;
+  roomTypeName?: string;
+  roomType?: string;
+  assignedRoomId?: string;
+  assignedRoomNumber?: string;
   physicalRoomId?: string;
   checkInProcessingAt?: string;
   location?: string;
@@ -51,15 +61,21 @@ export type FirebaseReservation = {
   roomImage?: string;
   reservationId?: string;
   checkIn?: string;
+  checkin?: string;
   checkInTime?: string;
+  checkinTime?: string;
+  checkoutTime?: string;
   contactNumber?: string;
   leadGuest?: string;
+  guestName?: string;
+  guestEmail?: string;
   checkOut?: string;
+  checkout?: string;
   total?: number;
   hotelId?: string;
   hotelName?: string;
   guests?: number;
-  extras?: string[];
+  extras?: string[] | { breakfast?: boolean; spa?: boolean };
   roomPrice?: number;
   extrasPrice?: number;
   totalPrice?: number;
@@ -77,6 +93,8 @@ export type FirebaseReservation = {
   loyaltyPointsAwarded?: boolean;
   loyaltyPointsEarned?: number;
   loyaltyLockedAt?: string;
+  guestCheckInRequestedAt?: string;
+  createdAtMs?: number;
 };
 
 export type FirebaseHotel = {
@@ -112,6 +130,13 @@ type PhysicalRoom = {
   status?: "Available" | "Occupied" | "Cleaning" | string;
   reservationId?: string;
   guestId?: string;
+  bookings?: PhysicalRoomBooking[];
+};
+
+type PhysicalRoomBooking = {
+  reservationId?: string;
+  checkin?: string;
+  checkout?: string;
 };
 
 export type UserPreferences = {
@@ -283,135 +308,216 @@ export async function createReservation(
 ) {
   const user = firebaseAuth.currentUser;
   if (!user) throw new Error("You must be signed in to create a reservation.");
-  const roomTypeId = resolveRoomTypeId(reservation.roomId ?? "");
-  if (!(await hasAvailablePhysicalRoom(roomTypeId))) {
-    throw new Error("No rooms of this type are currently available.");
+  const resolvedRoomTypeId = Number(
+    resolveRoomTypeId(String(reservation.roomId ?? "")),
+  );
+  const room = getRoomById(String(resolvedRoomTypeId));
+  if (
+    !Number.isInteger(resolvedRoomTypeId) ||
+    resolvedRoomTypeId < 1 ||
+    resolvedRoomTypeId > 20 ||
+    !room
+  ) {
+    throw new Error("The selected room type is not available in the catalog.");
+  }
+  const checkin = reservation.checkIn ?? reservation.checkin;
+  const checkout = reservation.checkOut ?? reservation.checkout;
+  if (!checkin || !checkout) {
+    throw new Error("Check-in and check-out dates are required.");
+  }
+  const requestedStart = new Date(`${checkin}T00:00:00`).getTime();
+  const requestedEnd = new Date(`${checkout}T00:00:00`).getTime();
+  if (
+    !Number.isFinite(requestedStart) ||
+    !Number.isFinite(requestedEnd) ||
+    requestedEnd <= requestedStart
+  ) {
+    throw new Error("Check-out must be after check-in.");
   }
 
-  const reservationRef = push(ref(database, "bookings"));
-  const reservationId = reservation.reservationId ?? reservationRef.key;
-  const confirmedAt = new Date().toISOString();
-  await set(reservationRef, {
-    ...reservation,
-    roomId: roomTypeId,
-    userId: user.uid,
-    reservationId,
-    createdAt: confirmedAt,
-    confirmedAt,
+  const physicalRoomQuery = firestoreQuery(
+    collection(firestore, "rooms"),
+    where("roomTypeId", "==", resolvedRoomTypeId),
+  );
+  const matchingRooms = await getDocs(physicalRoomQuery);
+  const physicalRoomRefs = matchingRooms.docs
+    .filter((snapshot) =>
+      isPhysicalRoomDocumentId(snapshot.id, resolvedRoomTypeId),
+    )
+    .map((snapshot) => snapshot.ref);
+  if (physicalRoomRefs.length === 0) {
+    throw new Error("Room inventory is not initialized. Please contact hotel staff.");
+  }
+
+  const reservationRef = doc(collection(firestore, "reservations"));
+  const reference = `SL-${Math.floor(100000 + Math.random() * 899999)}`;
+  const guestName =
+    reservation.leadGuest?.trim() || user.displayName || "StayLink Guest";
+  const extras = {
+    breakfast:
+      Array.isArray(reservation.extras) &&
+      reservation.extras.some((item) => item.toLowerCase().includes("breakfast")),
+    spa:
+      Array.isArray(reservation.extras) &&
+      reservation.extras.some((item) => item.toLowerCase().includes("spa")),
+  };
+  const extrasPrice = Number(reservation.extrasPrice ?? 0);
+  const roomPrice = Number(reservation.roomPrice ?? 0);
+  const total = Number(reservation.total ?? reservation.totalPrice ?? 0);
+  const subtotal = Number(reservation.subtotal ?? roomPrice + extrasPrice);
+  const taxes = Number(reservation.taxes ?? Math.max(0, total - subtotal));
+  const checkinTime = toTwentyFourHourTime(reservation.checkInTime);
+
+  await runFirestoreTransaction(firestore, async (transaction) => {
+    const physicalRoomSnapshots = await Promise.all(
+      physicalRoomRefs.map((roomRef) => transaction.get(roomRef)),
+    );
+    const availableRooms = physicalRoomSnapshots.filter((snapshot) => {
+      if (!snapshot.exists()) return false;
+      const physicalRoom = snapshot.data() as PhysicalRoom;
+      if ((physicalRoom.status || "Available") !== "Available") return false;
+      return !(physicalRoom.bookings ?? []).some((booking) => {
+        const bookingStart = new Date(`${booking.checkin}T00:00:00`).getTime();
+        const bookingEnd = new Date(`${booking.checkout}T00:00:00`).getTime();
+        return (
+          Number.isFinite(bookingStart) &&
+          Number.isFinite(bookingEnd) &&
+          requestedStart < bookingEnd &&
+          requestedEnd > bookingStart
+        );
+      });
+    });
+    const assignedRoom = availableRooms[0];
+    if (!assignedRoom) {
+      throw new Error("No physical room is available for these dates.");
+    }
+
+    const physicalRoom = assignedRoom.data() as PhysicalRoom;
+    transaction.update(assignedRoom.ref, {
+      bookings: [
+        ...(physicalRoom.bookings ?? []),
+        {
+          reservationId: reservationRef.id,
+          checkin,
+          checkout,
+        },
+      ],
+      updatedAt: serverTimestamp(),
+    });
+    transaction.set(reservationRef, {
+      reference,
+      reservationId: reservationRef.id,
+      roomId: resolvedRoomTypeId,
+      roomTypeId: resolvedRoomTypeId,
+      roomTypeName: room.name,
+      roomType: room.type,
+      assignedRoomId: assignedRoom.id,
+      assignedRoomNumber: physicalRoom.roomNumber ?? "",
+      roomName: reservation.roomName ?? room.name,
+      roomImage: reservation.roomImage ?? room.image,
+      destination: reservation.destination ?? room.destination,
+      location: reservation.location ?? room.view,
+      guestUid: user.uid,
+      userId: user.uid,
+      guestName,
+      leadGuest: guestName,
+      guestEmail: user.email ?? "",
+      contactNumber: reservation.contactNumber ?? "",
+      checkin,
+      checkIn: checkin,
+      checkout,
+      checkOut: checkout,
+      checkinTime,
+      nights: Number(reservation.nights ?? 1),
+      guests: Number(reservation.guests ?? 1),
+      extras,
+      roomPrice,
+      extrasPrice,
+      subtotal,
+      taxes,
+      totalPrice: total,
+      total,
+      status: "pending",
+      createdAtMs: Date.now(),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      loyaltyPointsAwarded: false,
+    });
   });
-  return reservationId;
+  return reservationRef.id;
 }
 
 export async function awardCompletedBookingPoints(
-  booking: FirebaseReservation,
-) {
-  const user = firebaseAuth.currentUser;
-  if (!user || booking.userId !== user.uid || booking.status !== "Completed") {
-    return;
-  }
-
-  const bookingRef = ref(database, `bookings/${booking.id}`);
-  const claim = await runDatabaseTransaction(bookingRef, (current) => {
-    if (!current || current.loyaltyPointsAwarded === true) return;
-    return { ...current, loyaltyPointsAwarded: true };
-  });
-
-  if (!claim.committed) return;
-
-  const membership = getMembershipForPoints(
-    Number((await get(ref(database, `users/${user.uid}`))).val()?.loyaltyPoints ?? 0),
-  );
-  const totalSpent = Number(
-    booking.totalPrice ?? booking.total ?? booking.subtotal ?? 0,
-  );
-  const earnedPoints = Math.floor(
-    (totalSpent / 100) * membership.pointsPer100,
-  );
-  const profileRef = ref(database, `users/${user.uid}`);
-  await runDatabaseTransaction(profileRef, (current) => {
-    const profile = current ?? {};
-    const loyaltyPoints = Number(profile.loyaltyPoints ?? 0) + earnedPoints;
-    const membership = getMembershipForPoints(loyaltyPoints).name;
-    return {
-      ...profile,
-      loyaltyPoints,
-      membership,
-      membershipStatus: membership,
-    };
-  });
-
-  await update(bookingRef, {
-    loyaltyPointsEarned: earnedPoints,
-    loyaltyLockedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  });
-}
-
-export async function lockCompletedReservation(
   reservation: FirebaseReservation,
 ) {
   const user = firebaseAuth.currentUser;
-  if (!user || reservation.userId !== user.uid || !reservation.checkOut) return;
-
-  const checkout = new Date(`${reservation.checkOut}T12:00:00`);
-  if (Number.isNaN(checkout.getTime()) || checkout > new Date()) return;
-
-  if (reservation.status === "Checked In" && reservation.physicalRoomId) {
-    const physicalRoomRef = doc(
-      firestore,
-      "rooms",
-      reservation.physicalRoomId,
-    );
-    const roomCheckout = await runFirestoreTransaction(
-      firestore,
-      async (transaction) => {
-        const physicalRoom = await transaction.get(physicalRoomRef);
-        const room = physicalRoom.data() as PhysicalRoom | undefined;
-        if (
-          !room ||
-          room.reservationId !== reservation.reservationId ||
-          (room.status !== "Occupied" && room.status !== "Cleaning")
-        ) {
-          return false;
-        }
-        if (room.status === "Occupied") {
-          transaction.update(physicalRoomRef, {
-            status: "Cleaning",
-            checkedOutAt: checkout.toISOString(),
-            updatedAt: new Date().toISOString(),
-          });
-        }
-        return true;
-      },
-    );
-    if (!roomCheckout) {
-      throw new Error("The assigned room could not be moved to cleaning.");
-    }
+  if (
+    !user ||
+    (reservation.guestUid ?? reservation.userId) !== user.uid ||
+    reservation.status !== "Completed"
+  ) {
+    return;
   }
 
-  const bookingRef = ref(database, `bookings/${reservation.id}`);
-  const claim = await runDatabaseTransaction(bookingRef, (current) => {
+  const reservationRef = doc(firestore, "reservations", reservation.id);
+  const profileRef = doc(firestore, "users", user.uid);
+  const result = await runFirestoreTransaction(firestore, async (transaction) => {
+    const [reservationSnapshot, profileSnapshot] = await Promise.all([
+      transaction.get(reservationRef),
+      transaction.get(profileRef),
+    ]);
+    const currentReservation = reservationSnapshot.data();
+    const currentProfile = profileSnapshot.data() ?? {};
     if (
-      !current ||
-      current.userId !== user.uid ||
-      (current.status !== "Confirmed" && current.status !== "Checked In")
+      !reservationSnapshot.exists() ||
+      !currentReservation ||
+      (currentReservation.guestUid ?? currentReservation.userId) !== user.uid ||
+      normalizeReservationStatus(currentReservation.status) !== "checked-out"
     ) {
-      return;
+      return null;
     }
 
-    return {
-      ...current,
-      status: "Completed",
-      completedAt: checkout.toISOString(),
-      loyaltyLockedAt: checkout.toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    let points = Number(currentProfile.loyaltyPoints ?? 0);
+    if (!currentReservation.loyaltyPointsAwarded) {
+      const membership = getMembershipForPoints(points);
+      const totalSpent = Number(
+        currentReservation.totalPrice ??
+          currentReservation.total ??
+          currentReservation.subtotal ??
+          0,
+      );
+      const earned = Math.floor(
+        (Math.max(0, totalSpent) / 100) * membership.pointsPer100,
+      );
+      points += earned;
+      const nextMembership = getMembershipForPoints(points);
+      const now = serverTimestamp();
+      transaction.update(reservationRef, {
+        loyaltyPointsAwarded: true,
+        loyaltyPointsEarned: earned,
+        loyaltyLockedAt: now,
+        updatedAt: now,
+      });
+      transaction.set(
+        profileRef,
+        {
+          loyaltyPoints: points,
+          membership: nextMembership.name,
+          updatedAt: now,
+        },
+        { merge: true },
+      );
+    }
+
+    const membership = getMembershipForPoints(points).name;
+    return { points, membership };
   });
 
-  if (claim.committed) {
-    await awardCompletedBookingPoints({
-      ...reservation,
-      status: "Completed",
+  if (result) {
+    await update(ref(database, `users/${user.uid}`), {
+      loyaltyPoints: result.points,
+      membership: result.membership,
+      membershipStatus: result.membership,
     });
   }
 }
@@ -419,28 +525,26 @@ export async function lockCompletedReservation(
 export async function checkInReservation(reservation: FirebaseReservation) {
   const user = firebaseAuth.currentUser;
   if (!user) throw new Error("You must be signed in to check in.");
-
-  const bookingRef = ref(database, `bookings/${reservation.id}`);
   const now = new Date();
-  const checkInDate = reservation.checkIn
-    ? new Date(`${reservation.checkIn}T00:00:00`)
-    : null;
-  const checkOutDate = reservation.checkOut
-    ? new Date(`${reservation.checkOut}T12:00:00`)
-    : null;
+  const checkin = reservation.checkIn ?? reservation.checkin;
+  const checkout = reservation.checkOut ?? reservation.checkout;
+  const checkInDate = checkin ? new Date(`${checkin}T00:00:00`) : null;
+  const checkOutDate = checkout ? new Date(`${checkout}T12:00:00`) : null;
   const checkInTime = reservation.checkInTime?.match(
     /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i,
   );
-  if (checkInDate) {
-    if (checkInTime) {
-      let hours = Number(checkInTime[1]) % 12;
-      if (checkInTime[3].toUpperCase() === "PM") hours += 12;
-      checkInDate.setHours(hours, Number(checkInTime[2]), 0, 0);
+  if (checkInDate && checkInTime) {
+    let hours = Number(checkInTime[1]) % 12;
+    if (checkInTime[3].toUpperCase() === "PM") hours += 12;
+    checkInDate.setHours(hours, Number(checkInTime[2]), 0, 0);
+  } else if (checkInDate) {
+    const time24 = reservation.checkInTime?.match(/^(\d{1,2}):(\d{2})$/);
+    if (time24) {
+      checkInDate.setHours(Number(time24[1]), Number(time24[2]), 0, 0);
     } else {
       checkInDate.setHours(15, 0, 0, 0);
     }
   }
-
   if (
     !checkInDate ||
     !checkOutDate ||
@@ -452,120 +556,24 @@ export async function checkInReservation(reservation: FirebaseReservation) {
     throw new Error("Check-in is available during your reservation dates.");
   }
 
-  const claim = await runDatabaseTransaction(bookingRef, (current) => {
+  const reservationRef = doc(firestore, "reservations", reservation.id);
+  await runFirestoreTransaction(firestore, async (transaction) => {
+    const snapshot = await transaction.get(reservationRef);
+    const current = snapshot.data() as FirebaseReservation | undefined;
     if (
+      !snapshot.exists() ||
       !current ||
-      current.userId !== user.uid ||
-      current.status !== "Confirmed"
+      (current.guestUid ?? current.userId) !== user.uid ||
+      normalizeReservationStatus(current.status) !== "confirmed"
     ) {
-      return;
+      throw new Error("Only a confirmed reservation can request check-in.");
     }
 
-    return {
-      ...current,
-      status: "Check-in Processing",
-      checkInProcessingAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    };
+    transaction.update(reservationRef, {
+      guestCheckInRequestedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   });
-
-  if (!claim.committed) {
-    throw new Error("This reservation cannot be checked in.");
-  }
-
-  const roomTypeId = normalizeRoomTypeId(
-    resolveRoomTypeId(reservation.roomId ?? ""),
-  );
-  let assignedRoomId: string | null = null;
-  try {
-    const physicalRooms = await getDocs(collection(firestore, "rooms"));
-    const candidates = physicalRooms.docs.filter((physicalRoom) => {
-      const room = physicalRoom.data() as PhysicalRoom;
-      return (
-        isPhysicalRoomDocumentId(physicalRoom.id, room.roomTypeId) &&
-        normalizeRoomTypeId(room.roomTypeId) === roomTypeId &&
-        room.status === "Available"
-      );
-    });
-
-    for (const candidate of candidates) {
-      const physicalRoomRef = doc(firestore, "rooms", candidate.id);
-      const assigned = await runFirestoreTransaction(
-        firestore,
-        async (transaction) => {
-          const snapshot = await transaction.get(physicalRoomRef);
-          const physicalRoom = snapshot.data() as PhysicalRoom | undefined;
-          if (
-            !physicalRoom ||
-            normalizeRoomTypeId(physicalRoom.roomTypeId) !== roomTypeId ||
-            physicalRoom.status !== "Available"
-          ) {
-            return false;
-          }
-
-          transaction.update(physicalRoomRef, {
-            status: "Occupied",
-            reservationId: reservation.reservationId ?? reservation.id,
-            guestId: user.uid,
-            checkedInAt: now.toISOString(),
-            updatedAt: now.toISOString(),
-          });
-          return true;
-        },
-      );
-
-      if (assigned) {
-        assignedRoomId = candidate.id;
-        break;
-      }
-    }
-    if (!assignedRoomId) {
-      throw new Error("No physical rooms of this type are currently available.");
-    }
-
-    await update(bookingRef, {
-      status: "Checked In",
-      physicalRoomId: assignedRoomId,
-      checkedInAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    });
-  } catch (error) {
-    if (assignedRoomId) {
-      const physicalRoomRef = doc(firestore, "rooms", assignedRoomId);
-      await runFirestoreTransaction(firestore, async (transaction) => {
-        const snapshot = await transaction.get(physicalRoomRef);
-        const room = snapshot.data() as PhysicalRoom | undefined;
-        if (
-          room?.status === "Occupied" &&
-          room.reservationId === (reservation.reservationId ?? reservation.id)
-        ) {
-          transaction.update(physicalRoomRef, {
-            status: "Available",
-            reservationId: deleteField(),
-            guestId: deleteField(),
-            checkedInAt: deleteField(),
-            updatedAt: new Date().toISOString(),
-          });
-        }
-      });
-    }
-    await runDatabaseTransaction(bookingRef, (current) => {
-      if (
-        !current ||
-        current.userId !== user.uid ||
-        current.status !== "Check-in Processing"
-      ) {
-        return;
-      }
-      return {
-        ...current,
-        status: "Confirmed",
-        checkInProcessingAt: null,
-        updatedAt: new Date().toISOString(),
-      };
-    });
-    throw error;
-  }
 }
 
 export async function redeemLoyaltyVoucher(voucherId: string) {
@@ -628,13 +636,17 @@ export async function updateReservation(
   const user = firebaseAuth.currentUser;
   if (!user) throw new Error("You must be signed in to update a reservation.");
 
-  const bookingRef = ref(database, `bookings/${reservationId}`);
-  const snapshot = await get(bookingRef);
-  if (!snapshot.exists() || snapshot.val()?.userId !== user.uid) {
+  const reservationRef = doc(firestore, "reservations", reservationId);
+  const snapshot = await getDoc(reservationRef);
+  const current = snapshot.data();
+  if (!snapshot.exists() || (current?.guestUid ?? current?.userId) !== user.uid) {
     throw new Error("Reservation not found.");
   }
 
-  await update(bookingRef, { ...changes, updatedAt: new Date().toISOString() });
+  await updateDoc(reservationRef, {
+    ...changes,
+    updatedAt: serverTimestamp(),
+  });
 }
 
 export async function cancelReservation(
@@ -644,39 +656,48 @@ export async function cancelReservation(
   const user = firebaseAuth.currentUser;
   if (!user) throw new Error("You must be signed in to cancel a reservation.");
 
-  const bookingRef = ref(database, `bookings/${reservation.id}`);
-  const snapshot = await get(bookingRef);
-  const current = snapshot.val();
-  if (!snapshot.exists() || current?.userId !== user.uid) {
-    throw new Error("Reservation not found.");
-  }
-  if (current.status === "Cancelled") return;
-  if (current.status === "Completed" || current.status === "Checked In") {
-    throw new Error("Checked-in or completed reservations cannot be cancelled.");
-  }
-
-  const cancelledAt = new Date().toISOString();
-  const cancellation = await runDatabaseTransaction(bookingRef, (booking) => {
+  const reservationRef = doc(firestore, "reservations", reservation.id);
+  await runFirestoreTransaction(firestore, async (transaction) => {
+    const snapshot = await transaction.get(reservationRef);
+    const current = snapshot.data() as FirebaseReservation | undefined;
     if (
-      !booking ||
-      booking.userId !== user.uid ||
-      (booking.status !== "Confirmed" && booking.status !== "Pending")
+      !snapshot.exists() ||
+      !current ||
+      (current.guestUid ?? current.userId) !== user.uid
     ) {
-      return;
+      throw new Error("Reservation not found.");
+    }
+    const status = normalizeReservationStatus(current.status);
+    if (status === "cancelled") return;
+    if (status !== "pending" && status !== "confirmed") {
+      throw new Error("This reservation can no longer be cancelled.");
     }
 
-    return {
-      ...booking,
-      status: "Cancelled",
+    const assignedRoomRef = current.assignedRoomId
+      ? doc(firestore, "rooms", current.assignedRoomId)
+      : null;
+    const assignedRoomSnapshot = assignedRoomRef
+      ? await transaction.get(assignedRoomRef)
+      : null;
+    const assignedRoom = assignedRoomSnapshot?.data() as
+      | PhysicalRoom
+      | undefined;
+    const updatedAt = serverTimestamp();
+    transaction.update(reservationRef, {
+      status: "cancelled",
       cancellationReason: reason,
-      cancelledAt,
-      updatedAt: cancelledAt,
-    };
+      cancelledAt: updatedAt,
+      updatedAt,
+    });
+    if (assignedRoomRef && assignedRoomSnapshot?.exists() && assignedRoom) {
+      transaction.update(assignedRoomRef, {
+        bookings: (assignedRoom.bookings ?? []).filter(
+          (booking) => booking.reservationId !== reservationRef.id,
+        ),
+        updatedAt,
+      });
+    }
   });
-  if (!cancellation.committed) {
-    throw new Error("This reservation can no longer be cancelled.");
-  }
-
 }
 
 export function subscribeToRoomInventory(
@@ -770,42 +791,155 @@ function isPhysicalRoomDocumentId(
     documentId.length > prefix.length;
 }
 
-async function hasAvailablePhysicalRoom(roomTypeId: string) {
-  const normalizedTypeId = normalizeRoomTypeId(roomTypeId);
-  if (!normalizedTypeId) return false;
-
-  const physicalRooms = await getDocs(collection(firestore, "rooms"));
-  return physicalRooms.docs.some((physicalRoom) => {
-    const room = physicalRoom.data() as PhysicalRoom;
-    return (
-      isPhysicalRoomDocumentId(physicalRoom.id, room.roomTypeId) &&
-      normalizeRoomTypeId(room.roomTypeId) === normalizedTypeId &&
-      room.status === "Available"
-    );
-  });
-}
-
 export function subscribeToReservationsForCurrentUser(
   callback: (reservations: FirebaseReservation[]) => void,
+  onError?: (error: unknown) => void,
 ): Unsubscribe | undefined {
   const user = firebaseAuth.currentUser;
   if (!user) return undefined;
 
-  const reservationsQuery = query(
-    ref(database, "bookings"),
-    orderByChild("userId"),
-    equalTo(user.uid),
+  const reservationsQuery = firestoreQuery(
+    collection(firestore, "reservations"),
+    where("guestUid", "==", user.uid),
   );
 
-  return onValue(reservationsQuery, (snapshot) => {
-    const reservations = snapshot.val() ?? {};
-    callback(
-      Object.entries(reservations).map(([id, reservation]) => ({
-        id,
-        ...(reservation as Omit<FirebaseReservation, "id">),
-      })),
-    );
-  });
+  return onSnapshot(
+    reservationsQuery,
+    (snapshot) => {
+      callback(
+        snapshot.docs
+          .map((reservation) =>
+            normalizeFirestoreReservation(reservation.id, reservation.data()),
+          )
+          .sort((left, right) => (right.createdAtMs ?? 0) - (left.createdAtMs ?? 0)),
+      );
+    },
+    (error) => onError?.(error),
+  );
+}
+
+function normalizeFirestoreReservation(
+  id: string,
+  data: Record<string, unknown>,
+): FirebaseReservation {
+  const createdAt = dateValueToString(data.createdAt);
+  const updatedAt = dateValueToString(data.updatedAt);
+  const checkIn = dateValueToString(data.checkin ?? data.checkIn);
+  const checkOut = dateValueToString(data.checkout ?? data.checkOut);
+  const status = normalizeReservationStatus(data.status);
+  const extras = data.extras;
+  const normalizedExtras = Array.isArray(extras)
+    ? extras.filter((item): item is string => typeof item === "string")
+    : extras && typeof extras === "object"
+      ? [
+          ...((extras as { breakfast?: boolean }).breakfast
+            ? ["Breakfast"]
+            : []),
+          ...((extras as { spa?: boolean }).spa ? ["Wellness spa"] : []),
+        ]
+      : [];
+  const createdAtMs =
+    typeof data.createdAtMs === "number"
+      ? data.createdAtMs
+      : createdAt
+        ? new Date(createdAt).getTime()
+        : undefined;
+
+  return {
+    ...(data as Omit<FirebaseReservation, "id">),
+    id,
+    reservationId: id,
+    guestUid: stringValue(data.guestUid ?? data.userId),
+    userId: stringValue(data.userId ?? data.guestUid),
+    roomId: (data.roomTypeId ?? data.roomId) as string | number | undefined,
+    roomTypeId: data.roomTypeId as string | number | undefined,
+    roomTypeName: stringValue(data.roomTypeName),
+    roomName: stringValue(data.roomName),
+    guestName: stringValue(data.guestName ?? data.leadGuest),
+    leadGuest: stringValue(data.leadGuest ?? data.guestName),
+    guestEmail: stringValue(data.guestEmail),
+    checkIn,
+    checkin: checkIn,
+    checkOut,
+    checkout: checkOut,
+    checkInTime: toTwelveHourTime(data.checkinTime ?? data.checkInTime),
+    status: mobileReservationStatus(status),
+    extras: normalizedExtras,
+    createdAt,
+    updatedAt,
+    confirmedAt: dateValueToString(data.confirmedAt),
+    checkedInAt: dateValueToString(data.checkedInAt),
+    completedAt: dateValueToString(data.checkedOutAt ?? data.completedAt),
+    cancelledAt: dateValueToString(data.cancelledAt),
+    guestCheckInRequestedAt: dateValueToString(data.guestCheckInRequestedAt),
+    createdAtMs,
+  };
+}
+
+function dateValueToString(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (value instanceof Date) return value.toISOString();
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "toDate" in value &&
+    typeof value.toDate === "function"
+  ) {
+    const date = value.toDate();
+    return date instanceof Date ? date.toISOString() : undefined;
+  }
+  return undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function normalizeReservationStatus(value: unknown): string {
+  return typeof value === "string"
+    ? value.trim().toLocaleLowerCase().replace(/[\s_]+/g, "-")
+    : "";
+}
+
+function mobileReservationStatus(status: string): string {
+  switch (status) {
+    case "pending":
+      return "Pending";
+    case "confirmed":
+      return "Confirmed";
+    case "rejected":
+      return "Rejected";
+    case "checked-in":
+      return "Checked In";
+    case "checked-out":
+    case "completed":
+      return "Completed";
+    case "cancelled":
+    case "canceled":
+      return "Cancelled";
+    default:
+      return status;
+  }
+}
+
+function toTwentyFourHourTime(value?: string): string {
+  if (!value) return "15:00";
+  const normalized = value.trim();
+  const twelveHour = normalized.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!twelveHour) return normalized;
+  let hours = Number(twelveHour[1]) % 12;
+  if (twelveHour[3].toUpperCase() === "PM") hours += 12;
+  return `${String(hours).padStart(2, "0")}:${twelveHour[2]}`;
+}
+
+function toTwelveHourTime(value: unknown): string {
+  if (typeof value !== "string") return "Time not set";
+  const normalized = value.trim();
+  const twentyFourHour = normalized.match(/^(\d{1,2}):(\d{2})$/);
+  if (!twentyFourHour) return normalized;
+  const hours = Number(twentyFourHour[1]);
+  const period = hours >= 12 ? "PM" : "AM";
+  return `${hours % 12 || 12}:${twentyFourHour[2]} ${period}`;
 }
 
 export function subscribeToHotels(
@@ -837,29 +971,17 @@ export function subscribeToAuthState(callback: (user: User | null) => void) {
 export async function fetchReservationsForCurrentUser(): Promise<
   FirebaseReservation[] | null
 > {
-  if (!firebaseAuth.currentUser) {
-    return null;
-  }
+  const user = firebaseAuth.currentUser;
+  if (!user) return null;
 
-  try {
-    const reservationsQuery = query(
-      ref(database, "bookings"),
-      orderByChild("userId"),
-      equalTo(firebaseAuth.currentUser.uid),
-    );
-
-    const snapshot = await get(reservationsQuery);
-    const reservations = snapshot.val() ?? {};
-
-    return Object.entries(reservations).map(([id, reservation]) => ({
-      id,
-      ...(reservation as Omit<FirebaseReservation, "id">),
-    }));
-  } catch (error) {
-    console.warn(
-      "Unable to fetch guest reservations from Realtime Database",
-      error,
-    );
-    return null;
-  }
+  const reservationsQuery = firestoreQuery(
+    collection(firestore, "reservations"),
+    where("guestUid", "==", user.uid),
+  );
+  const snapshot = await getDocs(reservationsQuery);
+  return snapshot.docs
+    .map((reservation) =>
+      normalizeFirestoreReservation(reservation.id, reservation.data()),
+    )
+    .sort((left, right) => (right.createdAtMs ?? 0) - (left.createdAtMs ?? 0));
 }
