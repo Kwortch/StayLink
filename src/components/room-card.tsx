@@ -58,9 +58,13 @@ export function RoomCard({ room, variant = "rooms", onPress }: RoomCardProps) {
         </Text>
         <Text style={styles.bed}>{room.bed}</Text>
         <Text style={styles.availability}>
-          {room.availableRooms > 0
-            ? `${room.availableRooms} rooms available`
-            : "Currently unavailable"}
+          {room.inventoryError
+            ? "Availability unavailable"
+            : room.availableRooms === null
+              ? "Checking availability..."
+              : room.availableRooms > 0
+                ? `${room.availableRooms} rooms available`
+                : "Currently unavailable"}
         </Text>
 
         {!compact && <Text style={styles.description}>{room.description}</Text>}

@@ -40,7 +40,7 @@ import {
 } from "@/data/rooms";
 import { auth } from "@/firebase/config";
 import {
-  initializeRoomInventory,
+  getFirebaseErrorDetails,
   subscribeToHotels,
   subscribeToRoomInventory,
   type FirebaseHotel,
@@ -155,28 +155,30 @@ export default function DiscoverScreen() {
     (typeof promiseItems)[number] | null
   >(null);
   const [hotels, setHotels] = useState<FirebaseHotel[]>([]);
-  const [inventory, setInventory] = useState<Record<string, RoomInventory>>({});
+  const [inventory, setInventory] = useState<Record<string, RoomInventory> | null>(null);
+  const [inventoryError, setInventoryError] = useState<string | null>(null);
 
   useEffect(() => subscribeToHotels(setHotels), []);
   useEffect(() => {
-    void Promise.all(
-      rooms.map((room) => initializeRoomInventory(room.id, room.availableRooms)),
-    );
     return subscribeToRoomInventory(
-      rooms.map((room) => room.id),
-      setInventory,
+      (value) => {
+        setInventory(value);
+        setInventoryError(null);
+      },
+      (error) => {
+        console.error("Unable to load Firestore room availability:", error);
+        setInventoryError(
+          `Could not read Firestore rooms: ${getFirebaseErrorDetails(error)}`,
+        );
+      },
     );
   }, []);
-
-  if (!fontsLoaded) {
-    return null;
-  }
 
   const localFeaturedRooms = discoverRooms
     .map((id) => rooms.find((room) => room.id === id))
     .filter((room): room is NonNullable<typeof room> => Boolean(room));
   const liveLocalFeaturedRooms = localFeaturedRooms.map((room) =>
-    applyRoomInventory(room, inventory[room.id]),
+    applyRoomInventory(room, inventory, Boolean(inventoryError)),
   );
   const firebaseRooms = useMemo<Room[]>(() => {
     return hotels.flatMap((hotel) => {
@@ -188,7 +190,7 @@ export default function DiscoverScreen() {
         : [hotel as unknown as Record<string, unknown>];
 
       return hotelRooms.map((value) => ({
-        id: String(value.id ?? hotel.roomId ?? hotel.id),
+        id: String(value.roomTypeId ?? value.id ?? hotel.roomId ?? hotel.id),
         name: String(value.roomName ?? value.name ?? hotel.name ?? "Hotel room"),
         type: (value.roomType ?? "Standard") as Room["type"],
         price: Number(value.price ?? hotel.price ?? 0),
@@ -199,11 +201,19 @@ export default function DiscoverScreen() {
         bed: String(value.bed ?? hotel.bed ?? "Not specified"),
         description: String(value.description ?? hotel.description ?? ""),
         image: String(value.image ?? hotel.image ?? ""),
-        availableRooms: Number(value.availableRooms ?? hotel.availableRooms ?? 0),
+        availableRooms: null,
         destination: String(value.destination ?? hotel.destination ?? ""),
       }));
     });
   }, [hotels]);
+
+  if (!fontsLoaded) {
+    return null;
+  }
+
+  const liveFirebaseRooms = firebaseRooms.map((room) =>
+    applyRoomInventory(room, inventory, Boolean(inventoryError)),
+  );
   const localRooms = selectedDestination
     ? rooms.filter(
         (room) =>
@@ -211,9 +221,9 @@ export default function DiscoverScreen() {
       )
     : rooms;
   const liveLocalRooms = localRooms.map((room) =>
-    applyRoomInventory(room, inventory[room.id]),
+    applyRoomInventory(room, inventory, Boolean(inventoryError)),
   );
-  const filteredFirebaseRooms = firebaseRooms.filter((room) => {
+  const filteredFirebaseRooms = liveFirebaseRooms.filter((room) => {
     const hotel = hotels.find((item) =>
       item.rooms ? Object.keys(item.rooms).includes(room.id) : item.id === room.id,
     );
@@ -449,6 +459,12 @@ export default function DiscoverScreen() {
             Designed for your perfect stay.
           </Text>
         </View>
+
+        {inventoryError ? (
+          <View style={styles.inventoryErrorBanner}>
+            <Text style={styles.inventoryErrorText}>{inventoryError}</Text>
+          </View>
+        ) : null}
 
         <View style={styles.roomList}>
           {featuredRooms.map((room) => (
@@ -821,6 +837,18 @@ const styles = StyleSheet.create({
     fontFamily: "Outfit_400Regular",
     fontSize: 14,
     lineHeight: 20,
+  },
+  inventoryErrorBanner: {
+    backgroundColor: "rgba(184, 70, 70, 0.18)",
+    borderColor: "rgba(244, 166, 166, 0.45)",
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    padding: StayLinkSpacing.md,
+  },
+  inventoryErrorText: {
+    color: "#F4A6A6",
+    fontFamily: "Outfit_500Medium",
+    fontSize: 13,
   },
   roomList: {
     gap: StayLinkSpacing.md,

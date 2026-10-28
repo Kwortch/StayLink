@@ -36,11 +36,11 @@ import { auth } from "@/firebase/config";
 import {
   createReservation,
   getDefaultProfile,
-  initializeRoomInventory,
   subscribeToRoomInventory,
   getMembershipForPoints,
   subscribeToUserProfile,
   type FirebaseUserProfile,
+  type RoomInventory,
 } from "@/lib/firebase";
 
 export default function RoomDetailScreen() {
@@ -73,7 +73,13 @@ export default function RoomDetailScreen() {
   const [profile, setProfile] = useState<FirebaseUserProfile>(() =>
     getDefaultProfile(auth.currentUser!),
   );
-  const [room, setRoom] = useState(roomFromCatalog);
+  const [inventory, setInventory] = useState<
+    Record<string, RoomInventory> | null
+  >(null);
+  const [inventoryError, setInventoryError] = useState(false);
+  const room = roomFromCatalog
+    ? applyRoomInventory(roomFromCatalog, inventory, inventoryError)
+    : undefined;
   const [fontsLoaded] = useFonts({
     PlayfairDisplay_400Regular,
     PlayfairDisplay_600SemiBold,
@@ -98,13 +104,13 @@ export default function RoomDetailScreen() {
 
   useEffect(() => {
     if (!roomFromCatalog) return;
-    void initializeRoomInventory(
-      roomFromCatalog.id,
-      roomFromCatalog.availableRooms,
+    return subscribeToRoomInventory(
+      (value) => {
+        setInventory(value);
+        setInventoryError(false);
+      },
+      () => setInventoryError(true),
     );
-    return subscribeToRoomInventory([roomFromCatalog.id], (inventory) => {
-      setRoom(applyRoomInventory(roomFromCatalog, inventory[roomFromCatalog.id]));
-    });
   }, [roomFromCatalog]);
 
   if (!fontsLoaded) return null;
@@ -222,22 +228,36 @@ export default function RoomDetailScreen() {
             <View style={styles.infoBlock}>
               <Text style={styles.infoLabel}>Availability</Text>
               <Text style={styles.infoValue}>
-                {room.availableRooms > 0
-                  ? `${room.availableRooms} rooms available`
-                  : "Currently unavailable"}
+                {room.inventoryError
+                  ? "Availability unavailable"
+                  : room.availableRooms === null
+                    ? "Checking availability..."
+                    : room.availableRooms > 0
+                      ? `${room.availableRooms} rooms available`
+                      : "Currently unavailable"}
               </Text>
             </View>
 
             <Pressable
               accessibilityRole="button"
-              disabled={isBooking}
+              disabled={isBooking || room.availableRooms === 0 || room.availableRooms === null}
               onPress={() => setShowBooking(true)}
               style={({ pressed }) => [
                 styles.cta,
+                (room.availableRooms === 0 || room.availableRooms === null) &&
+                  styles.ctaDisabled,
                 pressed && styles.ctaPressed,
               ]}
             >
-              <Text style={styles.ctaText}>Reserve this room</Text>
+              <Text style={styles.ctaText}>
+                {room.availableRooms === null
+                  ? inventoryError
+                    ? "Availability unavailable"
+                    : "Checking availability..."
+                  : room.availableRooms === 0
+                    ? "Currently unavailable"
+                    : "Reserve this room"}
+              </Text>
             </Pressable>
           </View>
         </View>
@@ -370,7 +390,6 @@ export default function RoomDetailScreen() {
                       leadGuest: leadGuest.trim(),
                       checkOut: formatDate(checkOut),
                       nights,
-                      availableRooms: room.availableRooms,
                       guests,
                       extras,
                       roomPrice,
@@ -517,6 +536,9 @@ const styles = StyleSheet.create({
   },
   ctaPressed: {
     opacity: 0.9,
+  },
+  ctaDisabled: {
+    opacity: 0.6,
   },
   ctaText: {
     color: StayLinkColors.background,

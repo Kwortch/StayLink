@@ -36,7 +36,7 @@ import {
   type RoomType,
 } from "@/data/rooms";
 import {
-  initializeRoomInventory,
+  getFirebaseErrorDetails,
   subscribeToRoomInventory,
   type RoomInventory,
 } from "@/lib/firebase";
@@ -59,29 +59,35 @@ export default function RoomsScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("top-rated");
   const [showSortMenu, setShowSortMenu] = useState(false);
-  const [inventory, setInventory] = useState<Record<string, RoomInventory>>({});
+  const [inventory, setInventory] = useState<Record<string, RoomInventory> | null>(null);
+  const [inventoryError, setInventoryError] = useState<string | null>(null);
 
   useEffect(() => {
-    void Promise.all(
-      rooms.map((room) => initializeRoomInventory(room.id, room.availableRooms)),
-    );
     return subscribeToRoomInventory(
-      rooms.map((room) => room.id),
-      setInventory,
+      (value) => {
+        setInventory(value);
+        setInventoryError(null);
+      },
+      (error) => {
+        console.error("Unable to load Firestore room availability:", error);
+        setInventoryError(
+          `Could not read Firestore rooms: ${getFirebaseErrorDetails(error)}`,
+        );
+      },
     );
   }, []);
-
-  if (!fontsLoaded) {
-    return null;
-  }
 
   const filteredRooms = useMemo(() => {
     const nextRooms =
       selectedType === "All"
-        ? rooms.map((room) => applyRoomInventory(room, inventory[room.id]))
+        ? rooms.map((room) =>
+            applyRoomInventory(room, inventory, Boolean(inventoryError)),
+          )
         : rooms
             .filter((room) => room.type === selectedType)
-            .map((room) => applyRoomInventory(room, inventory[room.id]));
+            .map((room) =>
+              applyRoomInventory(room, inventory, Boolean(inventoryError)),
+            );
     const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
     const searchedRooms = normalizedQuery
       ? nextRooms.filter((room) =>
@@ -100,7 +106,11 @@ export default function RoomsScreen() {
           return roomB.rating - roomA.rating;
       }
     });
-  }, [inventory, searchQuery, selectedType, sortMode]);
+  }, [inventory, inventoryError, searchQuery, selectedType, sortMode]);
+
+  if (!fontsLoaded) {
+    return null;
+  }
 
   return (
     <Screen contentStyle={styles.screenContent}>
@@ -116,6 +126,12 @@ export default function RoomsScreen() {
             design, and unforgettable coastal luxury.
           </Text>
         </View>
+
+        {inventoryError ? (
+          <View style={styles.inventoryErrorBanner}>
+            <Text style={styles.inventoryErrorText}>{inventoryError}</Text>
+          </View>
+        ) : null}
 
         <View style={styles.searchWrap}>
           <TextInput
@@ -250,6 +266,19 @@ const styles = StyleSheet.create({
   header: {
     gap: StayLinkSpacing.xs,
     marginBottom: StayLinkSpacing.md,
+  },
+  inventoryErrorBanner: {
+    backgroundColor: "rgba(184, 70, 70, 0.18)",
+    borderColor: "rgba(244, 166, 166, 0.45)",
+    borderRadius: StayLinkRadius.md,
+    borderWidth: 1,
+    marginBottom: StayLinkSpacing.md,
+    padding: StayLinkSpacing.md,
+  },
+  inventoryErrorText: {
+    color: "#F4A6A6",
+    fontFamily: "Outfit_500Medium",
+    fontSize: 13,
   },
   kicker: {
     color: StayLinkColors.lightGold,
